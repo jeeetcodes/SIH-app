@@ -15,7 +15,7 @@ uvicorn main:app --reload --port 8000
 
 Open http://localhost:8000/docs
 
-If `GEMINI_API_KEY` and `OPENAI_API_KEY` are empty, `POST /api/v1/scans/analyze` returns a structured mock extraction instead of a 500 error. The mock is then scored by the rules engine so the API remains testable without cloud credentials.
+Set one vision key in `backend/.env`: `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, or `OPENAI_API_KEY`. OpenRouter is preferred when configured and defaults to `google/gemma-4-31b-it:free`, a vision-capable model. If no key is set, `POST /api/v1/scans/analyze` returns a structured mock extraction instead of a 500 error. The mock is then scored by the rules engine so the API remains testable without cloud credentials.
 
 ## Analyze a label
 

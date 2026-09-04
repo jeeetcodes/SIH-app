@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from typing import Union
 
@@ -15,6 +16,9 @@ SYSTEM_PROMPT = (
     "Do not hallucinate or guess fields that are unreadable or missing; return null for unreadable fields. "
     "Capture MRP, net quantity, manufacturer name and complete address, date of packing "
     "(month and year), country of origin, consumer care (phone or email), and unit sale price when present."
+    " First decide whether this is a readable consumer-package label. If it is not a package, "
+    "or it has no readable packaging declarations, set is_packaging_label to false, explain why "
+    "in image_assessment, and leave all declaration fields null."
 )
 
 USER_PROMPT = (
@@ -31,6 +35,8 @@ MOCK_EXTRACTED_LABEL = ExtractedLabelData(
     country_of_origin=None,
     consumer_care=None,
     unit_sale_price=None,
+    is_packaging_label=None,
+    image_assessment="Mock extraction: configure a vision API key to verify whether this is a package label.",
 )
 
 
@@ -61,6 +67,8 @@ class VisionLLMService:
             return MOCK_EXTRACTED_LABEL.model_copy(), True
 
         try:
+            if settings.OPENROUTER_API_KEY:
+                return self._extract_with_openrouter(image_bytes, mime_type), False
             if settings.GEMINI_API_KEY:
                 return self._extract_with_gemini(image_bytes, mime_type), False
             return self._extract_with_openai(image_bytes, mime_type), False
@@ -134,3 +142,55 @@ class VisionLLMService:
         if message.content:
             return ExtractedLabelData.model_validate_json(message.content)
         return ExtractedLabelData()
+
+    def _extract_with_openrouter(self, image_bytes: bytes, mime_type: str) -> ExtractedLabelData:
+        """Send a local label image to a vision-capable OpenRouter model."""
+        import httpx
+
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        data_url = f"data:{mime_type or 'image/jpeg'};base64,{encoded}"
+        schema = ExtractedLabelData.model_json_schema()
+        payload = {
+            "model": settings.OPENROUTER_MODEL,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": USER_PROMPT},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                },
+            ],
+            "temperature": 0,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "label_extraction",
+                    "strict": True,
+                    "schema": schema,
+                },
+            },
+        }
+        headers = {
+            "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        if settings.OPENROUTER_SITE_URL:
+            headers["HTTP-Referer"] = settings.OPENROUTER_SITE_URL
+
+        with httpx.Client(timeout=httpx.Timeout(45.0, connect=10.0)) as client:
+            response = client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+
+        content = response.json()["choices"][0]["message"].get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("OpenRouter returned no extraction content")
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        return ExtractedLabelData.model_validate(json.loads(cleaned))

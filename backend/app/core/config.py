@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     GEMINI_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
+    OPENROUTER_API_KEY: Optional[str] = None
     CORS_ORIGINS: List[str] = Field(default_factory=lambda: ["*"])
     SECRET_KEY: str = "dev-insecure-secret-change-me"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
@@ -26,6 +27,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./label_police.db"
     GEMINI_MODEL: str = "gemini-2.0-flash"
     OPENAI_VISION_MODEL: str = "gpt-4o-mini"
+    OPENROUTER_MODEL: str = "google/gemma-4-31b-it:free"
+    OPENROUTER_SITE_URL: Optional[str] = None
     MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024
 
     @field_validator("CORS_ORIGINS", mode="before")
@@ -47,7 +50,7 @@ class Settings(BaseSettings):
                 pass
         return [part.strip() for part in text.split(",") if part.strip()] or ["*"]
 
-    @field_validator("GEMINI_API_KEY", "OPENAI_API_KEY", mode="before")
+    @field_validator("GEMINI_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", mode="before")
     @classmethod
     def empty_key_to_none(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -57,7 +60,7 @@ class Settings(BaseSettings):
 
     @property
     def has_vision_provider(self) -> bool:
-        return bool(self.GEMINI_API_KEY or self.OPENAI_API_KEY)
+        return bool(self.OPENROUTER_API_KEY or self.GEMINI_API_KEY or self.OPENAI_API_KEY)
 
 
 @lru_cache

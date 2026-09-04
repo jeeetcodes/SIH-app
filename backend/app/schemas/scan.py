@@ -36,6 +36,14 @@ class ExtractedLabelData(BaseModel):
         default=None,
         description='Unit sale price where declared, e.g. "Rs. 0.30/g".',
     )
+    is_packaging_label: Optional[bool] = Field(
+        default=None,
+        description="Whether the image clearly contains a consumer-package label.",
+    )
+    image_assessment: Optional[str] = Field(
+        default=None,
+        description="Brief reason when the image is not a readable package label.",
+    )
 
 
 class Violation(BaseModel):
@@ -53,3 +61,5 @@ class ScanResponse(BaseModel):
     extracted_data: ExtractedLabelData
     violations: List[Violation]
     used_mock_vision: bool = False
+    is_packaging_label: Optional[bool] = None
+    image_assessment: Optional[str] = None

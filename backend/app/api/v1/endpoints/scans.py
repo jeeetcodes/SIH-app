@@ -126,6 +126,13 @@ async def analyze_scan(
 
         extracted, used_mock = ExtractedLabelData(), True
 
+    if extracted.is_packaging_label is False:
+        assessment = extracted.image_assessment or "This image does not appear to show a readable consumer-package label."
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "NOT_A_LABEL", "message": assessment},
+        )
+
     try:
         status_label, overall_score, violations = rules_engine.evaluate(extracted)
     except Exception:
@@ -164,6 +171,8 @@ async def analyze_scan(
         extracted_data=extracted,
         violations=violations,
         used_mock_vision=used_mock,
+        is_packaging_label=extracted.is_packaging_label,
+        image_assessment=extracted.image_assessment,
     )
 
 
