@@ -40,3 +40,12 @@ curl -X POST http://localhost:8000/api/v1/scans/analyze -F "file=@label.jpg"
 cd backend
 pytest
 ```
+
+## Railway deployment
+
+Deploy the `backend` directory as a Railway service. The included `Dockerfile` and
+`railway.toml` install the Python dependencies, bind Uvicorn to Railway's assigned
+`PORT`, and use `/api/v1/health` as the health check. Add `OPENROUTER_API_KEY`,
+`OPENROUTER_MODEL`, and a strong `SECRET_KEY` in Railway's Variables page. After
+Railway generates a public domain, put `https://YOUR-DOMAIN/api/v1` in
+`mobile/.env` as `EXPO_PUBLIC_API_URL`, then restart Expo in tunnel mode.
