@@ -10,49 +10,62 @@ from app.schemas.scan import ExtractedLabelData
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Chain-of-Thought System Prompt (Stage 1 – structured visual audit)
+# ---------------------------------------------------------------------------
 SYSTEM_PROMPT = (
-    "You are an expert Legal Metrology Compliance Auditor in India. "
-    "Extract mandatory packaging declarations verbatim from the image. "
-    "Do not hallucinate or guess fields that are unreadable or missing; return null for unreadable fields. "
-    "Capture MRP, net quantity, manufacturer name and complete address, date of packing "
-    "(month and year), country of origin, consumer care (phone or email), and unit sale price when present."
-    " First decide whether this is a readable consumer-package label. If it is not a package, "
-    "or it has no readable packaging declarations, set is_packaging_label to false, explain why "
-    "in image_assessment, and leave all declaration fields null."
+    "You are a Senior Legal Metrology Inspector in India enforcing the Legal Metrology (Packaged Commodities) Rules, 2011.\n"
+    "Perform a high-precision visual audit of this product label image.\n\n"
+    "You MUST perform a micro-scan of the entire package surface, including fine print, ingredients lists, legal footers, barcode areas, side edges, crimp seals, top/bottom flaps, and back-of-pack text.\n\n"
+    "STEP-BY-STEP AUDIT PROCEDURE:\n"
+    "1. REGIONAL TEXT SCAN: Locate all text blocks containing contact details, grievances, disclaimers, prices, dates, or addresses.\n"
+    "2. CUSTOMER CARE / GRIEVANCE REDRESSAL (Rule 6(1)(h)):\n"
+    "   - Scan explicitly for terms like: 'Customer Care', 'Consumer Care', 'Grievance Officer', 'Write to us at', 'Care Executive', 'Feedback', 'Questions/Comments', 'Call us', 'Toll Free', 'Email:', 'Ph:', 'Tel:', 'PO Box'.\n"
+    "   - Do NOT mark consumer_care as null if ANY phone number, email address, or grievance contact string is present anywhere on the package.\n"
+    "3. MAXIMUM RETAIL PRICE (MRP) (Rule 6(1)(e)):\n"
+    "   - Extract numerical price digits and verify if 'incl. of all taxes' or 'inclusive of all taxes' is written.\n"
+    "4. NET QUANTITY (Rule 6(1)(c)):\n"
+    "   - Extract exact numeric value and unit (e.g., '500 g', '1 L', '100 ml', '1 N', '2 units').\n"
+    "5. DATE OF MFG/PACKING (Rule 6(1)(d)):\n"
+    "   - Extract month and year of manufacture/packing/import.\n"
+    "6. MANUFACTURER / IMPORTER / PACKER (Rule 6(1)(a)):\n"
+    "   - Extract complete legal name and postal address.\n"
+    "7. COUNTRY OF ORIGIN (Rule 6(1)(aa)):\n"
+    "   - Required for imported commodities.\n\n"
+    "DO NOT guess or invent text. However, DO NOT leave fields null if the text is present in small font sizes.\n"
+    "First decide whether this is a readable consumer-package label. If it is definitely NOT a package label or is completely unreadable, "
+    "set is_packaging_label to false, explain why in image_assessment, and leave all declaration fields null."
 )
 
 USER_PROMPT = (
-    "Extract the mandatory Legal Metrology (Packaged Commodities) Rule 6 declarations "
-    "from this packaging label. Return JSON only. Use null when a field is missing or unreadable."
+    "Extract mandatory Legal Metrology (Packaged Commodities) Rule 6 declarations from this packaging label image.\n"
+    "Perform a thorough micro-scan of ALL surfaces visible in the image.\n"
+    "Return JSON matching the schema. Use null when a field is genuinely missing or completely unreadable."
 )
 
-# Deterministic fixture used when GEMINI_API_KEY and OPENAI_API_KEY are absent.
+# Safe fallback fixture when vision API keys are not present
 MOCK_EXTRACTED_LABEL = ExtractedLabelData(
-    mrp="Rs. 99.00",
-    net_quantity="500 gms",
-    manufacturer_details="BrandX Snacks",
-    date_of_packing=None,
-    country_of_origin=None,
-    consumer_care=None,
-    unit_sale_price=None,
-    is_packaging_label=None,
-    image_assessment="Mock extraction: configure a vision API key to verify whether this is a package label.",
+    mrp="Rs. 99.00 incl. of all taxes",
+    net_quantity="500 g",
+    manufacturer_details="BrandX Snacks Pvt Ltd, Plot 12, MIDC, Pune, Maharashtra 411019, India",
+    date_of_packing="08/2026",
+    country_of_origin="India",
+    consumer_care="care@brandx.example | 1800-123-4567",
+    unit_sale_price="Rs. 0.20/g",
+    is_packaging_label=True,
+    image_assessment="Mock extraction: configure a Gemini/OpenAI vision API key for live AI label recognition.",
 )
 
 
 class VisionLLMService:
-    """OCR + structured extraction via Gemini 2.0 Flash or OpenAI, with a safe mock fallback."""
+    """OCR + structured visual extraction via Gemini 3.6 Flash, OpenAI, or OpenRouter, with a safe mock fallback."""
 
     def extract(
         self,
         image: Union[bytes, str],
         mime_type: str = "image/jpeg",
     ) -> tuple[ExtractedLabelData, bool]:
-        """
-        Extract label fields from raw bytes or base64.
-
-        Returns (extracted_data, used_mock_vision).
-        """
+        """Extract label fields from raw bytes or base64. Returns (extracted_data, used_mock_vision)."""
         try:
             image_bytes = self._coerce_bytes(image)
         except Exception:
@@ -92,7 +105,7 @@ class VisionLLMService:
 
         client = genai.Client(api_key=settings.GEMINI_API_KEY)
         response = client.models.generate_content(
-            model=settings.GEMINI_MODEL,
+            model=settings.GEMINI_MODEL or "gemini-3.6-flash",
             contents=[
                 types.Content(
                     role="user",
@@ -104,16 +117,21 @@ class VisionLLMService:
             ],
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
-                temperature=0,
+                temperature=0.0,
+                top_p=1.0,
                 response_mime_type="application/json",
-                response_json_schema=ExtractedLabelData.model_json_schema(),
+                response_schema=ExtractedLabelData,
             ),
         )
+
+        raw_text = getattr(response, "text", None) or ""
+        logger.info("[Gemini] Raw vision response:\n%s", raw_text)
+        print(f"\n[Gemini] Raw vision response TEXT:\n{raw_text}\n")
+
         parsed = getattr(response, "parsed", None)
         if isinstance(parsed, ExtractedLabelData):
             return parsed
-        text = getattr(response, "text", None) or ""
-        return ExtractedLabelData.model_validate_json(text)
+        return ExtractedLabelData.model_validate_json(raw_text)
 
     def _extract_with_openai(self, image_bytes: bytes, mime_type: str) -> ExtractedLabelData:
         from openai import OpenAI
@@ -129,14 +147,21 @@ class VisionLLMService:
                     "role": "user",
                     "content": [
                         {"type": "text", "text": USER_PROMPT},
-                        {"type": "image_url", "image_url": {"url": data_url}},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": data_url, "detail": "high"},
+                        },
                     ],
                 },
             ],
             response_format=ExtractedLabelData,
-            temperature=0,
+            temperature=0.0,
+            top_p=1.0,
         )
+
         message = completion.choices[0].message
+        logger.info("[OpenAI] Raw vision response:\n%s", message.content)
+
         if message.parsed is not None:
             return message.parsed
         if message.content:
@@ -144,7 +169,6 @@ class VisionLLMService:
         return ExtractedLabelData()
 
     def _extract_with_openrouter(self, image_bytes: bytes, mime_type: str) -> ExtractedLabelData:
-        """Send a local label image to a vision-capable OpenRouter model."""
         import httpx
 
         encoded = base64.b64encode(image_bytes).decode("ascii")
@@ -158,11 +182,15 @@ class VisionLLMService:
                     "role": "user",
                     "content": [
                         {"type": "text", "text": USER_PROMPT},
-                        {"type": "image_url", "image_url": {"url": data_url}},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": data_url, "detail": "high"},
+                        },
                     ],
                 },
             ],
-            "temperature": 0,
+            "temperature": 0.0,
+            "top_p": 1.0,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -188,6 +216,8 @@ class VisionLLMService:
             response.raise_for_status()
 
         content = response.json()["choices"][0]["message"].get("content")
+        logger.info("[OpenRouter] Raw vision response:\n%s", content)
+
         if not isinstance(content, str) or not content.strip():
             raise ValueError("OpenRouter returned no extraction content")
         cleaned = content.strip()

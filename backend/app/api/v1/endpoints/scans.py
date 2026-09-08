@@ -13,6 +13,7 @@ from app.core.database import get_db
 from app.models.scan import Scan
 from app.models.violation import Violation as ViolationRow
 from app.schemas.scan import ScanResponse
+from app.services.image_processor import ImagePreprocessor
 from app.services.rules_engine import RulesEngine
 from app.services.storage import StorageService
 from app.services.vision_llm import VisionLLMService
@@ -32,6 +33,7 @@ ALLOWED_CONTENT_TYPES = {
     "image/heif",
 }
 
+image_preprocessor = ImagePreprocessor()
 vision_service = VisionLLMService()
 rules_engine = RulesEngine()
 storage_service = StorageService()
@@ -118,13 +120,17 @@ async def analyze_scan(
             detail="Uploaded file is not a readable image of the declared type",
         )
 
+    # --- Image preprocessing for improved OCR accuracy ---
+    image_bytes, mime_type = image_preprocessor.enhance(image_bytes, mime_type)
+
     try:
         extracted, used_mock = vision_service.extract(image_bytes, mime_type=mime_type)
-    except Exception:
+    except Exception as e:
         logger.exception("Vision extraction crashed")
-        from app.schemas.scan import ExtractedLabelData
-
-        extracted, used_mock = ExtractedLabelData(), True
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Vision analysis failed: {str(e)}",
+        )
 
     if extracted.is_packaging_label is False:
         assessment = extracted.image_assessment or "This image does not appear to show a readable consumer-package label."
