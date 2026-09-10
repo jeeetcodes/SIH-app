@@ -24,6 +24,13 @@ def test_analyze_without_api_keys_returns_mock_scan(client, monkeypatch) -> None
     assert payload["status"] == "COMPLIANT"
     assert payload["overall_score"] == 100
 
+    history = client.get("/api/v1/scans")
+    assert history.status_code == 200
+    record = history.json()[0]
+    assert record["product_name"] == MOCK_EXTRACTED_LABEL.product_name
+    assert record["score"] == 100
+    assert record["is_compliant"] is True
+
 
 def test_analyze_rejects_empty_upload(client) -> None:
     response = client.post(

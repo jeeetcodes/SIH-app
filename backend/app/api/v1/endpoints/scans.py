@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from typing import Optional
 from uuid import uuid4
 
@@ -11,8 +12,9 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.scan import Scan
+from app.models.scan_record import ScanRecord
 from app.models.violation import Violation as ViolationRow
-from app.schemas.scan import ScanResponse
+from app.schemas.scan import ScanHistoryItem, ScanResponse
 from app.services.image_processor import ImagePreprocessor
 from app.services.rules_engine import RulesEngine
 from app.services.storage import StorageService
@@ -193,6 +195,16 @@ async def analyze_scan(
     )
 
 
+@router.get("", response_model=list[ScanHistoryItem])
+def list_scans(db: Session = Depends(get_db)) -> list[ScanHistoryItem]:
+    """Return compact scan history, newest first, for the My Scans view."""
+    return list(
+        db.query(ScanRecord)
+        .order_by(ScanRecord.created_at.desc(), ScanRecord.id.desc())
+        .all()
+    )
+
+
 def _persist_scan(
     db: Session,
     *,
@@ -212,6 +224,18 @@ def _persist_scan(
             image_uri=image_uri,
         )
         db.add(scan)
+        db.add(
+            ScanRecord(
+                product_name=extracted_product_name(extracted_json),
+                score=overall_score,
+                is_compliant=status_label == "COMPLIANT",
+                violations_json=json.dumps(
+                    [item.model_dump(mode="json") for item in violations],
+                    separators=(",", ":"),
+                ),
+                raw_extracted_data=extracted_json,
+            )
+        )
         for item in violations:
             db.add(
                 ViolationRow(
@@ -226,4 +250,17 @@ def _persist_scan(
         db.commit()
     except SQLAlchemyError:
         db.rollback()
-        logger.exception("Scan audit persistence failed; returning in-memory result")
+        logger.exception("Scan audit persistence failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="The scan could not be saved. Please try again.",
+        )
+
+
+def extracted_product_name(extracted_json: str) -> Optional[str]:
+    """Read the optional product name without allowing malformed JSON to fail a scan."""
+    try:
+        value = json.loads(extracted_json).get("product_name")
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return value.strip() if isinstance(value, str) and value.strip() else None

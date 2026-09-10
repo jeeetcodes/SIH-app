@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -7,6 +8,11 @@ class ExtractedLabelData(BaseModel):
     """Mandatory Legal Metrology declarations extracted from a packaging image."""
 
     model_config = ConfigDict(extra="ignore")
+
+    product_name: Optional[str] = Field(
+        default=None,
+        description="Product or brand name shown on the package label.",
+    )
 
     mrp: Optional[str] = Field(
         default=None,
@@ -63,3 +69,13 @@ class ScanResponse(BaseModel):
     used_mock_vision: bool = False
     is_packaging_label: Optional[bool] = None
     image_assessment: Optional[str] = None
+
+
+class ScanHistoryItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    created_at: datetime
+    product_name: Optional[str]
+    score: int = Field(ge=0, le=100)
+    is_compliant: bool

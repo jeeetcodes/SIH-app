@@ -18,7 +18,8 @@ SYSTEM_PROMPT = (
     "Perform a high-precision visual audit of this product label image.\n\n"
     "You MUST perform a micro-scan of the entire package surface, including fine print, ingredients lists, legal footers, barcode areas, side edges, crimp seals, top/bottom flaps, and back-of-pack text.\n\n"
     "STEP-BY-STEP AUDIT PROCEDURE:\n"
-    "1. REGIONAL TEXT SCAN: Locate all text blocks containing contact details, grievances, disclaimers, prices, dates, or addresses.\n"
+    "1. REGIONAL TEXT SCAN: Locate all text blocks containing product names, contact details, grievances, disclaimers, prices, dates, or addresses.\n"
+    "   - Extract the product or brand name as product_name when it is clearly visible.\n"
     "2. CUSTOMER CARE / GRIEVANCE REDRESSAL (Rule 6(1)(h)):\n"
     "   - Scan explicitly for terms like: 'Customer Care', 'Consumer Care', 'Grievance Officer', 'Write to us at', 'Care Executive', 'Feedback', 'Questions/Comments', 'Call us', 'Toll Free', 'Email:', 'Ph:', 'Tel:', 'PO Box'.\n"
     "   - Do NOT mark consumer_care as null if ANY phone number, email address, or grievance contact string is present anywhere on the package.\n"
@@ -45,6 +46,7 @@ USER_PROMPT = (
 
 # Safe fallback fixture when vision API keys are not present (never used for 429/503 failures).
 MOCK_EXTRACTED_LABEL = ExtractedLabelData(
+    product_name="BrandX Snacks",
     mrp="Rs. 99.00 incl. of all taxes",
     net_quantity="500 g",
     manufacturer_details="BrandX Snacks Pvt Ltd, Plot 12, MIDC, Pune, Maharashtra 411019, India",

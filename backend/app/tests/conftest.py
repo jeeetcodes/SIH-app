@@ -13,4 +13,6 @@ from main import app  # noqa: E402
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(app)
+    # Enter the client context so FastAPI's lifespan creates all ORM tables.
+    with TestClient(app) as test_client:
+        yield test_client

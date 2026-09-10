@@ -17,6 +17,16 @@ Open http://localhost:8000/docs
 
 Set one vision key in `backend/.env`: `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, or `OPENAI_API_KEY`. OpenRouter is preferred when configured and defaults to `google/gemma-4-31b-it:free`, a vision-capable model. If no key is set, `POST /api/v1/scans/analyze` returns a structured mock extraction instead of a 500 error. The mock is then scored by the rules engine so the API remains testable without cloud credentials.
 
+## Database
+
+Set `DATABASE_URL` in `backend/.env` for PostgreSQL persistence, for example:
+
+```text
+DATABASE_URL=postgresql://label_police:password@localhost:5432/label_police
+```
+
+Tables are created when FastAPI starts. Without `DATABASE_URL`, the local SQLite database remains available for development.
+
 ## Analyze a label
 
 ```bash
@@ -29,6 +39,7 @@ curl -X POST http://localhost:8000/api/v1/scans/analyze -F "file=@label.jpg"
 | --- | --- | --- |
 | GET | `/api/v1/health` | Process health |
 | POST | `/api/v1/scans/analyze` | Upload a label image and receive compliance results |
+| GET | `/api/v1/scans` | Recent saved scans, newest first |
 | GET | `/api/v1/rules` | Legal Metrology guideline catalog |
 | POST | `/api/v1/auth/register` | Create an account |
 | POST | `/api/v1/auth/login` | Issue JWT access and refresh tokens |

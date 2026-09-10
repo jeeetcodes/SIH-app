@@ -21,10 +21,8 @@ logger = logging.getLogger("label_police")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    try:
-        init_db()
-    except Exception:
-        logger.exception("Database initialization failed; API will still serve in-memory responses")
+    logger.info("Initializing database tables")
+    init_db()
     yield
 
 
