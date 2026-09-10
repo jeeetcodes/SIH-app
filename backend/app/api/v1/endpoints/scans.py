@@ -16,7 +16,7 @@ from app.schemas.scan import ScanResponse
 from app.services.image_processor import ImagePreprocessor
 from app.services.rules_engine import RulesEngine
 from app.services.storage import StorageService
-from app.services.vision_llm import VisionLLMService
+from app.services.vision_llm import VisionLLMService, VisionProviderBusyError, is_provider_busy
 
 logger = logging.getLogger(__name__)
 
@@ -125,18 +125,29 @@ async def analyze_scan(
 
     try:
         extracted, used_mock = vision_service.extract(image_bytes, mime_type=mime_type)
+    except VisionProviderBusyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The AI server is currently busy due to high demand. Please try again in a few moments.",
+        )
+    except HTTPException:
+        raise
     except Exception as e:
+        if is_provider_busy(e):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="The AI server is currently busy due to high demand. Please try again in a few moments.",
+            )
         logger.exception("Vision extraction crashed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Vision analysis failed: {str(e)}",
+            detail="Vision analysis failed. Please try again with a clearer photo.",
         )
 
     if extracted.is_packaging_label is False:
-        assessment = extracted.image_assessment or "This image does not appear to show a readable consumer-package label."
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"code": "NOT_A_LABEL", "message": assessment},
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Valid product label not detected. Please upload a clear photo of a packaging label.",
         )
 
     try:

@@ -43,7 +43,7 @@ USER_PROMPT = (
     "Return JSON matching the schema. Use null when a field is genuinely missing or completely unreadable."
 )
 
-# Safe fallback fixture when vision API keys are not present
+# Safe fallback fixture when vision API keys are not present (never used for 429/503 failures).
 MOCK_EXTRACTED_LABEL = ExtractedLabelData(
     mrp="Rs. 99.00 incl. of all taxes",
     net_quantity="500 g",
@@ -56,9 +56,55 @@ MOCK_EXTRACTED_LABEL = ExtractedLabelData(
     image_assessment="Mock extraction: configure a Gemini/OpenAI vision API key for live AI label recognition.",
 )
 
+BUSY_STATUS_CODES = {429, 503}
+BUSY_DETAIL = (
+    "The AI server is currently busy due to high demand. Please try again in a few moments."
+)
+
+
+class VisionProviderBusyError(Exception):
+    """Raised when Gemini/OpenAI/OpenRouter is rate-limited or unavailable."""
+
+    def __init__(self, message: str = BUSY_DETAIL) -> None:
+        super().__init__(message)
+
+
+def is_provider_busy(exc: BaseException) -> bool:
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(exc, "code", None)
+    if status is None:
+        status = getattr(exc, "status", None)
+    try:
+        if int(status) in BUSY_STATUS_CODES:
+            return True
+    except (TypeError, ValueError):
+        pass
+
+    response = getattr(exc, "response", None)
+    response_status = getattr(response, "status_code", None) if response is not None else None
+    try:
+        if int(response_status) in BUSY_STATUS_CODES:
+            return True
+    except (TypeError, ValueError):
+        pass
+
+    text = str(exc).upper()
+    return any(
+        token in text
+        for token in (
+            "429",
+            "503",
+            "UNAVAILABLE",
+            "TOO MANY REQUESTS",
+            "RESOURCE_EXHAUSTED",
+            "RESOURCE EXHAUSTED",
+        )
+    )
+
 
 class VisionLLMService:
-    """OCR + structured visual extraction via Gemini 3.6 Flash, OpenAI, or OpenRouter, with a safe mock fallback."""
+    """OCR + structured visual extraction via Gemini, OpenAI, or OpenRouter."""
 
     def extract(
         self,
@@ -85,9 +131,14 @@ class VisionLLMService:
             if settings.GEMINI_API_KEY:
                 return self._extract_with_gemini(image_bytes, mime_type), False
             return self._extract_with_openai(image_bytes, mime_type), False
-        except Exception:
-            logger.exception("Vision provider failed; falling back to empty structured extraction")
-            return ExtractedLabelData(), False
+        except VisionProviderBusyError:
+            raise
+        except Exception as exc:
+            if is_provider_busy(exc):
+                logger.warning("Vision provider busy: %s", exc)
+                raise VisionProviderBusyError() from exc
+            logger.exception("Vision provider failed")
+            raise
 
     def _coerce_bytes(self, image: Union[bytes, str]) -> bytes:
         if isinstance(image, bytes):
@@ -213,6 +264,8 @@ class VisionLLMService:
                 headers=headers,
                 json=payload,
             )
+            if response.status_code in BUSY_STATUS_CODES:
+                raise VisionProviderBusyError()
             response.raise_for_status()
 
         content = response.json()["choices"][0]["message"].get("content")

@@ -49,7 +49,7 @@ class ExtractedLabelData(BaseModel):
 class Violation(BaseModel):
     rule_id: str
     field_name: str
-    severity: Literal["CRITICAL", "WARNING"]
+    severity: Literal["CRITICAL", "MAJOR", "WARNING"]
     message: str
     citation: str
 

@@ -50,6 +50,10 @@ INDIA_ORIGIN_PATTERN = re.compile(r"\b(india|bharat|hindustan)\b", re.IGNORECASE
 
 MULTI_WORD_UNITS = ("sq cm", "sq m")
 
+CRITICAL_PENALTY = 25
+MAJOR_PENALTY = 10
+WARNING_PENALTY = 5
+
 
 class RulesEngine:
     """Deterministic Legal Metrology (Packaged Commodities) Rule 6 checker."""
@@ -75,11 +79,21 @@ class RulesEngine:
                 )
             )
 
-        critical_count = sum(1 for item in violations if item.severity == "CRITICAL")
-        warning_count = sum(1 for item in violations if item.severity == "WARNING")
-        overall_score = max(0, min(100, 100 - (18 * critical_count) - (8 * warning_count)))
-        status = "NON_COMPLIANT" if critical_count else "COMPLIANT"
+        overall_score = self._score(violations)
+        blocking = any(item.severity in {"CRITICAL", "MAJOR"} for item in violations)
+        status = "NON_COMPLIANT" if blocking else "COMPLIANT"
         return status, overall_score, violations
+
+    def _score(self, violations: List[Violation]) -> int:
+        score = 100
+        for item in violations:
+            if item.severity == "CRITICAL":
+                score -= CRITICAL_PENALTY
+            elif item.severity == "MAJOR":
+                score -= MAJOR_PENALTY
+            else:
+                score -= WARNING_PENALTY
+        return max(0, min(100, score))
 
     def _blank(self, value: Optional[str]) -> bool:
         return value is None or not str(value).strip() or str(value).strip().lower() in {
@@ -165,7 +179,7 @@ class RulesEngine:
                 self._violation(
                     "LM-PCR-6-1-h",
                     "consumer_care",
-                    "CRITICAL",
+                    "MAJOR",
                     "Consumer care details are missing. A telephone number or email address is required.",
                     RULE_CITATIONS["consumer_care"],
                 )
@@ -178,8 +192,18 @@ class RulesEngine:
                 self._violation(
                     "LM-PCR-6-1-h",
                     "consumer_care",
-                    "CRITICAL",
+                    "MAJOR",
                     "Consumer care declaration does not contain a telephone number or email address.",
+                    RULE_CITATIONS["consumer_care"],
+                )
+            ]
+        if has_phone and not has_email:
+            return [
+                self._violation(
+                    "LM-PCR-6-1-h",
+                    "consumer_care",
+                    "MAJOR",
+                    "Consumer care email is missing from the label.",
                     RULE_CITATIONS["consumer_care"],
                 )
             ]
