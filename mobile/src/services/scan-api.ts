@@ -115,7 +115,7 @@ function getApiBaseUrl(): string {
 
   // 4. Hard-coded LAN fallback — update EXPO_PUBLIC_API_URL in .env instead of
   //    changing this line. This is only reached when all dynamic methods fail.
-  const fallback = "http://10.130.65.112:8000/api/v1";
+  const fallback = Platform.OS === "web" ? "http://localhost:8000/api/v1" : "http://192.168.1.8:8000/api/v1";
   console.warn("[API] All dynamic discovery failed. Using hardcoded fallback:", fallback);
   return fallback;
 }
