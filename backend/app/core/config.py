@@ -50,6 +50,17 @@ class Settings(BaseSettings):
                 pass
         return [part.strip() for part in text.split(",") if part.strip()] or ["*"]
 
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def sanitize_database_url(cls, value: Optional[str]) -> str:
+        if not value:
+            import os
+            value = os.environ.get("DATABASE_URL", "sqlite:///./label_police.db")
+        text = str(value).strip()
+        if text.startswith("postgres://"):
+            return "postgresql://" + text[len("postgres://"):]
+        return text
+
     @field_validator("GEMINI_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", mode="before")
     @classmethod
     def empty_key_to_none(cls, value: Optional[str]) -> Optional[str]:

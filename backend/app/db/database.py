@@ -5,6 +5,7 @@ Set ``DATABASE_URL`` to a PostgreSQL URL in production, for example:
 The SQLite default remains useful for local development and tests.
 """
 
+import os
 from collections.abc import Generator
 
 from sqlalchemy import create_engine
@@ -17,11 +18,17 @@ class Base(DeclarativeBase):
     pass
 
 
+raw_database_url = os.environ.get("DATABASE_URL", settings.DATABASE_URL)
+if raw_database_url.startswith("postgres://"):
+    raw_database_url = "postgresql://" + raw_database_url[len("postgres://"):]
+
+DATABASE_URL = raw_database_url
+
 connect_args: dict[str, bool] = {}
-if settings.DATABASE_URL.startswith("sqlite"):
+if DATABASE_URL.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
 
-engine = create_engine(settings.DATABASE_URL, connect_args=connect_args, future=True)
+engine = create_engine(DATABASE_URL, connect_args=connect_args, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
