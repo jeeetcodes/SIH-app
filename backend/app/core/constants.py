@@ -48,6 +48,10 @@ RULE_CITATIONS = {
     "date_of_packing": "Legal Metrology (Packaged Commodities) Rules, 2011, Rule 6(1)(d)",
     "manufacturer_details": "Legal Metrology (Packaged Commodities) Rules, 2011, Rule 6(1)(a)",
     "country_of_origin": "Legal Metrology (Packaged Commodities) Rules, 2011, Rule 6(1)(aa)",
+    "fssai_license": "FSS (Packaging and Labelling) Regulations, 2011 & Legal Metrology Act, 2009",
+    "expiry_date": "Legal Metrology (Packaged Commodities) Rules, 2011, Rule 6(1)(d) & FSSR 2011",
+    "ingredients": "Legal Metrology (Packaged Commodities) Rules, 2011 & Product Composition Norms",
+    "formatting": "Legal Metrology (Packaged Commodities) Rules, 2011, Rule 7 & Rule 9",
 }
 
 LEGAL_METROLOGY_GUIDELINES = [

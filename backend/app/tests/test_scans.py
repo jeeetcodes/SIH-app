@@ -23,6 +23,8 @@ def test_analyze_without_api_keys_returns_mock_scan(client, monkeypatch) -> None
     assert payload["extracted_data"]["net_quantity"] == MOCK_EXTRACTED_LABEL.net_quantity
     assert payload["status"] == "COMPLIANT"
     assert payload["overall_score"] == 100
+    assert payload["final_score"] == 100
+    assert payload["product_category"] == MOCK_EXTRACTED_LABEL.product_category
 
     history = client.get("/api/v1/scans")
     assert history.status_code == 200
@@ -95,6 +97,22 @@ def test_analyze_busy_vision_returns_503(client, monkeypatch) -> None:
     )
     assert response.status_code == 503
     assert "busy" in response.json()["detail"].lower()
+
+
+def test_analyze_dns_connection_failure_returns_503(client, monkeypatch) -> None:
+    from app.api.v1.endpoints.scans import vision_service
+    from app.services.vision_llm import VisionProviderConnectionError
+
+    def _connection_failed(*_args, **_kwargs):
+        raise VisionProviderConnectionError()
+
+    monkeypatch.setattr(vision_service, "extract", _connection_failed)
+    response = client.post(
+        "/api/v1/scans/analyze",
+        files={"file": ("label.jpg", BytesIO(b"\xff\xd8\xff photo"), "image/jpeg")},
+    )
+    assert response.status_code == 503
+    assert "unable to connect" in response.json()["detail"].lower()
 
 
 def test_healthcheck(client) -> None:

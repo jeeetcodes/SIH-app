@@ -2,32 +2,43 @@ import Constants from "expo-constants";
 import * as LegacyFileSystem from "expo-file-system/legacy";
 import { Platform } from "react-native";
 
-export type Severity = "CRITICAL" | "MAJOR" | "WARNING";
+export type Severity = "CRITICAL" | "MAJOR" | "MINOR" | "WARNING" | "critical" | "major" | "minor";
 
 export type ExtractedLabelData = {
+  product_name?: string | null;
+  product_category?: string | null;
   mrp: string | null;
   net_quantity: string | null;
   manufacturer_details: string | null;
   date_of_packing: string | null;
+  expiry_date?: string | null;
   country_of_origin: string | null;
   consumer_care: string | null;
   unit_sale_price: string | null;
+  fssai_license?: string | null;
+  ingredients?: string | null;
+  formatting_assessment?: string | null;
   is_packaging_label?: boolean | null;
   image_assessment?: string | null;
 };
 
 export type Violation = {
   rule_id: string;
+  rule_name?: string;
   field_name: string;
   severity: Severity;
+  penalty?: number;
   message: string;
+  explanation?: string;
   citation: string;
 };
 
 export type ScanResponse = {
   scan_id: string;
   status: "COMPLIANT" | "NON_COMPLIANT";
+  final_score?: number;
   overall_score: number;
+  product_category?: string | null;
   extracted_data: ExtractedLabelData;
   violations: Violation[];
   used_mock_vision: boolean;

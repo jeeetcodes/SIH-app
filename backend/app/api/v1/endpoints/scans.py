@@ -18,7 +18,13 @@ from app.schemas.scan import ScanHistoryItem, ScanResponse
 from app.services.image_processor import ImagePreprocessor
 from app.services.rules_engine import RulesEngine
 from app.services.storage import StorageService
-from app.services.vision_llm import VisionLLMService, VisionProviderBusyError, is_provider_busy
+from app.services.vision_llm import (
+    VisionLLMService,
+    VisionProviderBusyError,
+    VisionProviderConnectionError,
+    is_provider_busy,
+    is_provider_connection_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +138,11 @@ async def analyze_scan(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="The AI server is currently busy due to high demand. Please try again in a few moments.",
         )
+    except VisionProviderConnectionError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to connect to AI provider. Check backend internet connection/DNS.",
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -139,6 +150,11 @@ async def analyze_scan(
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="The AI server is currently busy due to high demand. Please try again in a few moments.",
+            )
+        if is_provider_connection_error(e):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Unable to connect to AI provider. Check backend internet connection/DNS.",
             )
         logger.exception("Vision extraction crashed")
         raise HTTPException(
@@ -186,7 +202,9 @@ async def analyze_scan(
     return ScanResponse(
         scan_id=scan_id,
         status=status_label,  # type: ignore[arg-type]
+        final_score=overall_score,
         overall_score=overall_score,
+        product_category=extracted.product_category,
         extracted_data=extracted,
         violations=violations,
         used_mock_vision=used_mock,

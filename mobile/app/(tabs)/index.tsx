@@ -2,7 +2,6 @@ import { useCallback, useState, type FC } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Image,
   Modal,
   Pressable,
   ScrollView,
@@ -10,10 +9,11 @@ import {
   Text,
   View,
 } from "react-native";
-import { type Href, useRouter } from "expo-router";
+import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { analyzeLabelImage, ScanApiError } from "@/services/scan-api";
+import { analyzeLabelImage, ScanApiError, type ScanResponse } from "@/services/scan-api";
+import { InspectionResultView } from "@/components/inspection-result-view";
 
 const COLORS = {
   navy: "#1B365D",
@@ -31,14 +31,14 @@ const COLORS = {
 const pickerOptions: ImagePicker.ImagePickerOptions = {
   mediaTypes: ["images"],
   quality: 0.9,
-  // Preserve the complete label rather than asking the user to crop it.
   allowsEditing: false,
 };
 
 const ScanHome: FC = () => {
-  const router = useRouter();
   const insets = useSafeAreaInsets();
+  // Persistent image and report state — guarantees scanned image never disappears
   const [image, setImage] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const [scanReport, setScanReport] = useState<ScanResponse | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   const applyPickerResult = useCallback((result: ImagePicker.ImagePickerResult) => {
@@ -48,6 +48,7 @@ const ScanHome: FC = () => {
     const asset = result.assets[0];
     if (asset?.uri) {
       setImage(asset);
+      setScanReport(null); // Clear previous result when new image is chosen
     }
   }, []);
 
@@ -95,118 +96,141 @@ const ScanHome: FC = () => {
     setIsAnalyzing(true);
     try {
       const result = await analyzeLabelImage(image);
-      router.push({
-        pathname: "/result",
-        params: { imageUri: image.uri, report: JSON.stringify(result) },
-      } as unknown as Href);
+      // Persist the scan report right here without navigating away or losing image state
+      setScanReport(result);
     } catch (error) {
       if (error instanceof ScanApiError && error.status === 503) {
-        Alert.alert("Server is busy", "Server is busy. Please try again.");
+        Alert.alert(
+          "Service Unavailable",
+          error.message || "Unable to connect to AI provider. Check backend internet connection/DNS."
+        );
+      } else if (error instanceof ScanApiError && error.status === 500) {
+        Alert.alert(
+          "Network Error",
+          "Network error: Could not reach the analysis server. Please check your backend connection."
+        );
       } else if (error instanceof ScanApiError && error.status === 400) {
         Alert.alert(
           "Valid product label not detected",
-          "Valid product label not detected. Please upload a valid label photo."
+          error.message || "Valid product label not detected. Please upload a clear photo of a packaging label."
         );
       } else {
         const message =
           error instanceof ScanApiError
             ? error.message
-            : "Label unreadable or server unavailable. Please retake the photo with better lighting.";
-        Alert.alert("Analysis Error", message);
+            : "Network error: Could not reach the analysis server.";
+        Alert.alert("Connection Error", message);
       }
     } finally {
+      // NOTE: We intentionally do NOT clear image state here, preserving the image preview!
       setIsAnalyzing(false);
     }
-  }, [image, isAnalyzing, router]);
+  }, [image, isAnalyzing]);
 
+  // Explicit user reset: only cleared when user explicitly requests
   const handleClearPreview = useCallback(() => {
     setImage(null);
+    setScanReport(null);
+  }, []);
+
+  const handleScanAgain = useCallback(() => {
+    setImage(null);
+    setScanReport(null);
   }, []);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
-      {/* Header */}
+      {/* App Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Label Police</Text>
         <Text style={styles.headerSubtitle}>Legal Metrology Compliance Inspector</Text>
       </View>
 
-      <ScrollView
-        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 80 }]}
-        showsVerticalScrollIndicator={false}>
-        {/* Main Camera / Preview Frame */}
-        {image ? (
-          <View style={styles.previewCard}>
-            <View style={styles.previewHeader}>
-              <Text style={styles.previewTag}>READY FOR INSPECTION</Text>
-              <Pressable onPress={handleClearPreview} style={styles.removeBtn}>
-                <Text style={styles.removeBtnText}>Clear</Text>
-              </Pressable>
-            </View>
-
-            <Image
-              source={{ uri: image.uri }}
-              style={styles.previewImage}
-              resizeMode="contain"
-              accessibilityLabel="Captured packaging label preview"
-            />
-          </View>
-        ) : (
-          <View style={styles.cameraBox}>
-            {/* Viewfinder frame overlay */}
-            <View style={styles.viewfinderGuide}>
-              <View style={[styles.corner, styles.topLeft]} />
-              <View style={[styles.corner, styles.topRight]} />
-              <View style={[styles.corner, styles.bottomLeft]} />
-              <View style={[styles.corner, styles.bottomRight]} />
-
-              <Text style={styles.guideIcon}>🔍</Text>
-              <Text style={styles.guideTitle}>Align Product Label Here</Text>
-              <Text style={styles.guideSubtitle}>
-                Ensure MRP, Net Qty, Dates & Consumer Care details are clearly visible
-              </Text>
-            </View>
-          </View>
-        )}
-
-        {/* Action Controls */}
-        <View style={styles.controlsGroup}>
+      {/* If an inspection report is available, render the results view directly */}
+      {scanReport ? (
+        <InspectionResultView
+          imageUri={image?.uri}
+          report={scanReport}
+          onScanAgain={handleScanAgain}
+        />
+      ) : (
+        <ScrollView
+          contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 80 }]}
+          showsVerticalScrollIndicator={false}>
+          {/* Main Camera / Preview Frame */}
           {image ? (
-            <Pressable
-              onPress={handleAnalyzeLabel}
-              disabled={isAnalyzing}
-              style={({ pressed }) => [styles.analyzeBtn, pressed && styles.pressed]}>
-              <Text style={styles.analyzeBtnText}>⚡ Audit Label Compliance</Text>
-            </Pressable>
-          ) : (
-            <Pressable
-              onPress={handleScanLabel}
-              style={({ pressed }) => [styles.shutterBtn, pressed && styles.pressed]}>
-              <View style={styles.shutterInner}>
-                <Text style={styles.shutterIcon}>📸</Text>
+            <View style={styles.previewCard}>
+              <View style={styles.previewHeader}>
+                <Text style={styles.previewTag}>READY FOR INSPECTION</Text>
+                <Pressable onPress={handleClearPreview} style={styles.removeBtn}>
+                  <Text style={styles.removeBtnText}>Clear</Text>
+                </Pressable>
               </View>
-              <Text style={styles.shutterText}>Snap Label Photo</Text>
-            </Pressable>
+
+              <Image
+                source={{ uri: image.uri }}
+                style={styles.previewImage}
+                contentFit="contain"
+                accessibilityLabel="Captured packaging label preview"
+              />
+            </View>
+          ) : (
+            <View style={styles.cameraBox}>
+              {/* Viewfinder frame overlay */}
+              <View style={styles.viewfinderGuide}>
+                <View style={[styles.corner, styles.topLeft]} />
+                <View style={[styles.corner, styles.topRight]} />
+                <View style={[styles.corner, styles.bottomLeft]} />
+                <View style={[styles.corner, styles.bottomRight]} />
+
+                <Text style={styles.guideIcon}>🔍</Text>
+                <Text style={styles.guideTitle}>Align Product Label Here</Text>
+                <Text style={styles.guideSubtitle}>
+                  Ensure MRP, Net Qty, Dates, FSSAI & Consumer Care details are clearly visible
+                </Text>
+              </View>
+            </View>
           )}
 
-          <Pressable
-            onPress={handleChooseFromGallery}
-            style={({ pressed }) => [styles.galleryBtn, pressed && styles.pressed]}>
-            <Text style={styles.galleryBtnText}>
-              {image ? "Choose Different Image" : "📁 Choose from Gallery"}
-            </Text>
-          </Pressable>
-        </View>
-      </ScrollView>
+          {/* Action Controls */}
+          <View style={styles.controlsGroup}>
+            {image ? (
+              <Pressable
+                onPress={handleAnalyzeLabel}
+                disabled={isAnalyzing}
+                style={({ pressed }) => [styles.analyzeBtn, pressed && styles.pressed]}>
+                <Text style={styles.analyzeBtnText}>⚡ Audit Label Compliance</Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                onPress={handleScanLabel}
+                style={({ pressed }) => [styles.shutterBtn, pressed && styles.pressed]}>
+                <View style={styles.shutterInner}>
+                  <Text style={styles.shutterIcon}>📸</Text>
+                </View>
+                <Text style={styles.shutterText}>Snap Label Photo</Text>
+              </Pressable>
+            )}
 
-      {/* Futuristic Analyzing Loading Modal Overlay */}
+            <Pressable
+              onPress={handleChooseFromGallery}
+              style={({ pressed }) => [styles.galleryBtn, pressed && styles.pressed]}>
+              <Text style={styles.galleryBtnText}>
+                {image ? "Choose Different Image" : "📁 Choose from Gallery"}
+              </Text>
+            </Pressable>
+          </View>
+        </ScrollView>
+      )}
+
+      {/* Analyzing Loading Modal Overlay */}
       <Modal visible={isAnalyzing} transparent animationType="fade">
         <View style={styles.loadingOverlay}>
           <View style={styles.loadingCard}>
             <ActivityIndicator size="large" color={COLORS.navy} />
             <Text style={styles.loadingTitle}>Analyzing Label...</Text>
             <Text style={styles.loadingBody}>
-              Performing high-precision visual audit against Legal Metrology Rules 2011
+              Performing high-precision visual audit against Legal Metrology Rules, 2011
             </Text>
           </View>
         </View>
@@ -297,7 +321,7 @@ const styles = StyleSheet.create({
   removeBtnText: { fontSize: 13, fontWeight: "600", color: "#E53E3E" },
   previewImage: {
     width: "100%",
-    height: 400,
+    height: 380,
     maxHeight: 400,
     borderRadius: 12,
     backgroundColor: COLORS.offWhite,
