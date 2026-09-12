@@ -327,6 +327,8 @@ export async function analyzeLabelImage(asset: {
         const payload = await response.json().catch(() => null);
 
         if (!response.ok) {
+          console.error("[API] Backend Error Details (web):", response.status, JSON.stringify(payload));
+
           if (response.status === 504 && attempt < maxAttempts) {
             console.warn(`[API] 504 Gateway Timeout on attempt ${attempt}. Retrying in ${RETRY_DELAY_MS}ms...`);
             await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
@@ -334,9 +336,13 @@ export async function analyzeLabelImage(asset: {
           }
 
           const detail = payload?.detail;
-          const message = typeof detail === "string" ? detail : detail?.message;
+          const message = typeof detail === "string"
+            ? detail
+            : typeof detail === "object" && detail?.message
+              ? detail.message
+              : null;
           throw new ScanApiError(
-            message || "The label could not be analyzed.",
+            message || `Server responded with ${response.status}. The label could not be analyzed.`,
             response.status
           );
         }
@@ -353,12 +359,7 @@ export async function analyzeLabelImage(asset: {
         );
 
         console.log(`[API] uploadAsync attempt ${attempt} HTTP status:`, uploadResult.status);
-
-        if (uploadResult.status === 504 && attempt < maxAttempts) {
-          console.warn(`[API] 504 Gateway Timeout on attempt ${attempt}. Retrying in ${RETRY_DELAY_MS}ms...`);
-          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
-          continue;
-        }
+        console.log(`[API] uploadAsync response body preview:`, uploadResult.body?.substring(0, 500));
 
         let payload: any = null;
         try {
@@ -368,10 +369,28 @@ export async function analyzeLabelImage(asset: {
         }
 
         if (uploadResult.status < 200 || uploadResult.status >= 300) {
+          console.error(
+            "[API] Backend Error Details (native):",
+            uploadResult.status,
+            JSON.stringify(payload)
+          );
+
+          if (uploadResult.status === 504 && attempt < maxAttempts) {
+            console.warn(`[API] 504 Gateway Timeout on attempt ${attempt}. Retrying in ${RETRY_DELAY_MS}ms...`);
+            await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+            continue;
+          }
+
           const detail = payload?.detail;
-          const message = typeof detail === "string" ? detail : detail?.message;
+          const message = typeof detail === "string"
+            ? detail
+            : typeof detail === "object" && detail?.message
+              ? detail.message
+              : Array.isArray(detail)
+                ? detail.map((d: any) => d?.msg || d?.message || JSON.stringify(d)).join("; ")
+                : null;
           throw new ScanApiError(
-            message || "The label could not be analyzed.",
+            message || `Server responded with ${uploadResult.status}. The label could not be analyzed.`,
             uploadResult.status
           );
         }
@@ -381,7 +400,14 @@ export async function analyzeLabelImage(asset: {
       }
     } catch (err: any) {
       lastError = err;
-      console.warn(`[API] Attempt ${attempt}/${maxAttempts} failed:`, err?.message);
+      console.error(
+        `[API] Attempt ${attempt}/${maxAttempts} FAILED.`,
+        "\n  Error name   :", err?.name,
+        "\n  Error message:", err?.message,
+        "\n  Error code   :", err?.code,
+        "\n  HTTP status  :", err?.status,
+        "\n  Stack        :", err?.stack?.split("\n").slice(0, 3).join("\n")
+      );
 
       if (attempt < maxAttempts && isColdStartOrTimeoutError(err)) {
         console.log(`[API] Cold-start/timeout detected on attempt ${attempt}. Retrying in ${RETRY_DELAY_MS}ms...`);
@@ -389,11 +415,15 @@ export async function analyzeLabelImage(asset: {
         continue;
       }
 
+      // Non-retryable error (e.g. 400, 422, 500) — break immediately
       break;
     }
   }
 
-  console.error("[API] All analyze attempts exhausted.");
+  console.error(
+    "[API] All analyze attempts exhausted. Last error:",
+    lastError?.name, lastError?.message, "status:", lastError?.status
+  );
   throw handleApiError(lastError, "Could not reach Label Police. Check your network connection.");
 }
 

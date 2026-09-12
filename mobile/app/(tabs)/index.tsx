@@ -137,27 +137,44 @@ const ScanHome: FC = () => {
       // Persist the scan report right here without navigating away or losing image state
       setScanReport(result);
     } catch (error) {
-      if (error instanceof ScanApiError && error.status === 503) {
+      const apiError = error instanceof ScanApiError ? error : null;
+      const status = apiError?.status;
+      const detail = apiError?.message || "An unexpected error occurred.";
+
+      console.error("[ScanHome] Analysis error:", status, detail);
+
+      if (apiError?.code === "ECONNABORTED" || detail.includes("spinning up")) {
+        Alert.alert("Server Waking Up", detail);
+      } else if (status === 400) {
+        Alert.alert(
+          "Invalid Image",
+          detail
+        );
+      } else if (status === 413) {
+        Alert.alert(
+          "File Too Large",
+          detail
+        );
+      } else if (status === 422) {
+        Alert.alert(
+          "Request Rejected",
+          detail
+        );
+      } else if (status === 500) {
+        Alert.alert(
+          "Server Error",
+          detail
+        );
+      } else if (status === 503) {
         Alert.alert(
           "Service Unavailable",
-          error.message || "Unable to connect to AI provider. Check backend internet connection/DNS."
-        );
-      } else if (error instanceof ScanApiError && error.status === 500) {
-        Alert.alert(
-          "Network Error",
-          "Network error: Could not reach the analysis server. Please check your backend connection."
-        );
-      } else if (error instanceof ScanApiError && error.status === 400) {
-        Alert.alert(
-          "Valid product label not detected",
-          error.message || "Valid product label not detected. Please upload a clear photo of a packaging label."
+          detail
         );
       } else {
-        const message =
-          error instanceof ScanApiError
-            ? error.message
-            : "Network error: Could not reach the analysis server.";
-        Alert.alert("Connection Error", message);
+        Alert.alert(
+          "Connection Error",
+          apiError ? detail : "Could not reach the analysis server. Check your network connection."
+        );
       }
     } finally {
       // NOTE: We intentionally do NOT clear image state here, preserving the image preview!
