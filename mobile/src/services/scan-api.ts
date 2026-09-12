@@ -55,14 +55,24 @@ export type ScanHistoryItem = {
 };
 
 export class ScanApiError extends Error {
-  constructor(message: string, public readonly status?: number) {
+  constructor(message: string, public readonly status?: number, public readonly code?: string) {
     super(message);
     this.name = "ScanApiError";
   }
 }
 
 // ---------------------------------------------------------------------------
-// URL Resolution
+// Constants & Configuration
+// ---------------------------------------------------------------------------
+
+export const PRODUCTION_API_URL = "https://packlens-3ko8.onrender.com/api/v1";
+export const REQUEST_TIMEOUT_MS = 120_000; // 120s timeout to support Render free tier cold starts
+export const RETRY_DELAY_MS = 5_000; // 5s wait before retry on transient network/timeout failure
+export const COLD_START_MESSAGE =
+  "Server is spinning up (Render free tier cold start). Please wait ~30 seconds and try again.";
+
+// ---------------------------------------------------------------------------
+// URL Resolution & Sanitization
 // ---------------------------------------------------------------------------
 
 function isLoopback(host: string): boolean {
@@ -70,51 +80,48 @@ function isLoopback(host: string): boolean {
   return h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "0.0.0.0";
 }
 
-function getApiBaseUrl(): string {
+function sanitizeUrl(rawUrl: string): string {
+  let url = rawUrl.trim();
+  // Fix accidental duplicate schemes like https://https:// or http://http://
+  url = url.replace(/^(https?:\/\/)+/i, (match) => {
+    return match.toLowerCase().startsWith("https") ? "https://" : "http://";
+  });
+  // Strip trailing slashes
+  return url.replace(/\/+$/, "");
+}
+
+export function getApiBaseUrl(): string {
   // 1. Explicit env var (highest priority).
-  //    Supports tunnels (ngrok / Cloudflare Tunnel) and production endpoints.
-  //    On native devices we reject loopback values that would cause the phone
-  //    to query itself instead of the PC.
-  const configuredUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
-  if (configuredUrl) {
-    const cleanUrl = configuredUrl.replace(/\/$/, "");
+  const rawEnvUrl = process.env.EXPO_PUBLIC_API_URL;
+  if (rawEnvUrl && rawEnvUrl.trim().length > 0) {
+    const cleanUrl = sanitizeUrl(rawEnvUrl);
     const isLoopbackUrl =
-      cleanUrl.includes("://localhost") || cleanUrl.includes("://127.0.0.1");
+      cleanUrl.includes("://localhost") ||
+      cleanUrl.includes("://127.0.0.1") ||
+      cleanUrl.includes("://0.0.0.0");
 
     if (Platform.OS !== "web" && isLoopbackUrl) {
       console.warn(
-        "[API] EXPO_PUBLIC_API_URL is a loopback address — a physical device " +
-          "cannot reach the PC via localhost. Falling through to dynamic detection."
+        "[API] EXPO_PUBLIC_API_URL points to localhost, which is unreachable from physical mobile devices. Falling back to production Render backend."
       );
-      // fall through to step 2
-    } else {
-      console.log("[API] Using EXPO_PUBLIC_API_URL:", cleanUrl);
-      return cleanUrl;
+      return PRODUCTION_API_URL;
     }
+    console.log("[API] Using EXPO_PUBLIC_API_URL:", cleanUrl);
+    return cleanUrl;
   }
 
-  // 2. Dynamic LAN host from Expo Metro bundler.
-  //    Expo Go sets debuggerHost / hostUri to the PC's actual LAN IP when the
-  //    bundle is served over Wi-Fi. Loopback values are explicitly rejected.
+  // 2. Dynamic LAN host from Expo Metro bundler (if available during local Wi-Fi development).
   const metroHost =
     Constants.expoGoConfig?.debuggerHost ?? Constants.expoConfig?.hostUri;
   const host = metroHost?.split(":")[0]?.trim();
 
   if (host && !isLoopback(host)) {
     const derived = `http://${host}:8000/api/v1`;
-    console.log("[API] Using Metro-derived host:", derived);
+    console.log("[API] Using Metro-derived local host:", derived);
     return derived;
   }
 
-  if (host) {
-    console.warn(
-      `[API] Metro host "${host}" is a loopback address — skipping. ` +
-        "Set EXPO_PUBLIC_API_URL in .env to your PC's current Wi-Fi IP."
-    );
-  }
-
-  // 3. Web browser: derive from window.location so the dev server and backend
-  //    stay on the same host without any manual configuration.
+  // 3. Web browser location host if applicable
   if (
     Platform.OS === "web" &&
     typeof window !== "undefined" &&
@@ -124,15 +131,149 @@ function getApiBaseUrl(): string {
     return `http://${window.location.hostname}:8000/api/v1`;
   }
 
-  // 4. Hard-coded LAN fallback — update EXPO_PUBLIC_API_URL in .env instead of
-  //    changing this line. This is only reached when all dynamic methods fail.
-  const fallback = Platform.OS === "web" ? "http://localhost:8000/api/v1" : "http://192.168.1.8:8000/api/v1";
-  console.warn("[API] All dynamic discovery failed. Using hardcoded fallback:", fallback);
-  return fallback;
+  // 4. Robust production fallback to live Render backend
+  console.log("[API] Defaulting to production Render API URL:", PRODUCTION_API_URL);
+  return PRODUCTION_API_URL;
 }
 
 // ---------------------------------------------------------------------------
-// Image Upload
+// Error & Timeout Helpers
+// ---------------------------------------------------------------------------
+
+function isColdStartOrTimeoutError(error: any): boolean {
+  if (!error) return false;
+  const message = (error.message || "").toLowerCase();
+  const code = (error.code || "").toUpperCase();
+  const status = error.status;
+
+  return (
+    code === "ECONNABORTED" ||
+    code === "ETIMEDOUT" ||
+    code === "ERR_NETWORK" ||
+    code === "ENOTFOUND" ||
+    code === "ECONNREFUSED" ||
+    message.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("aborted") ||
+    message.includes("failed to connect") ||
+    message.includes("network request failed") ||
+    message.includes("network error") ||
+    message.includes("cold start") ||
+    message.includes("504") ||
+    status === 504 ||
+    status === 502 ||
+    status === 503
+  );
+}
+
+function handleApiError(error: any, fallbackMessage: string): ScanApiError {
+  if (error instanceof ScanApiError) {
+    if (isColdStartOrTimeoutError(error) && !error.message.includes("spinning up")) {
+      return new ScanApiError(COLD_START_MESSAGE, error.status, "ECONNABORTED");
+    }
+    return error;
+  }
+
+  if (isColdStartOrTimeoutError(error)) {
+    return new ScanApiError(COLD_START_MESSAGE, error?.status, "ECONNABORTED");
+  }
+
+  const message = error?.message || fallbackMessage;
+  return new ScanApiError(message, error?.status, error?.code);
+}
+
+// ---------------------------------------------------------------------------
+// Backend Warm-up (Health Ping)
+// ---------------------------------------------------------------------------
+
+/**
+ * Sends a lightweight GET ping to /api/v1/health to wake up the Render free-tier
+ * backend early when the app boots or mounts.
+ */
+export async function pingBackend(timeoutMs = 15_000): Promise<boolean> {
+  const baseUrl = getApiBaseUrl();
+  const healthUrl = `${baseUrl}/health`;
+  console.log("[API] Pinging backend to warm up:", healthUrl);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(healthUrl, {
+      method: "GET",
+      signal: controller.signal,
+    });
+    console.log("[API] Warm-up ping response status:", response.status);
+    return response.ok;
+  } catch (err: any) {
+    console.warn("[API] Ping attempt non-fatal result (server waking up):", err?.message);
+    return false;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Internal Network Request Helpers with 120s Timeout
+// ---------------------------------------------------------------------------
+
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit,
+  timeoutMs: number = REQUEST_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    return res;
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      const timeoutErr: any = new Error(`Request timed out after ${timeoutMs}ms`);
+      timeoutErr.code = "ECONNABORTED";
+      throw timeoutErr;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function uploadAsyncWithTimeout(
+  targetUrl: string,
+  fileUri: string,
+  mimeType: string,
+  timeoutMs: number = REQUEST_TIMEOUT_MS
+): Promise<LegacyFileSystem.FileSystemUploadResult> {
+  let timer: any;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const err: any = new Error(`Upload timed out after ${timeoutMs}ms`);
+      err.code = "ECONNABORTED";
+      reject(err);
+    }, timeoutMs);
+  });
+
+  try {
+    const uploadPromise = LegacyFileSystem.uploadAsync(targetUrl, fileUri, {
+      httpMethod: "POST",
+      uploadType: LegacyFileSystem.FileSystemUploadType.MULTIPART,
+      fieldName: "file",
+      mimeType,
+    });
+
+    return await Promise.race([uploadPromise, timeoutPromise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Image Upload & Analysis (with 120s Timeout & Auto-Retry)
 // ---------------------------------------------------------------------------
 
 export async function analyzeLabelImage(asset: {
@@ -145,7 +286,7 @@ export async function analyzeLabelImage(asset: {
   const fileName = asset.fileName || `label_${Date.now()}.jpg`;
   const mimeType = asset.mimeType || "image/jpeg";
 
-  console.log("================ [API DEBUG START] ================");
+  console.log("================ [API SCAN REQUEST] ================");
   console.log("[API] Target URL :", targetUrl);
   console.log("[API] Asset URI  :", asset.uri);
   console.log("[API] File name  :", fileName);
@@ -157,108 +298,107 @@ export async function analyzeLabelImage(asset: {
     throw new ScanApiError("No image URI provided to analyzeLabelImage.");
   }
 
-  // ── WEB PATH ─────────────────────────────────────────────────────────────
-  // Browsers handle multipart/form-data correctly through the native Fetch API.
-  if (Platform.OS === "web") {
-    let imageBlob: Blob;
-    try {
-      const res = await fetch(asset.uri);
-      imageBlob = await res.blob();
-    } catch {
-      throw new ScanApiError(
-        "The selected image could not be read by the browser. Please choose it again."
-      );
-    }
+  const maxAttempts = 2;
+  let lastError: any = null;
 
-    const formData = new FormData();
-    formData.append("file", imageBlob, fileName);
-
-    let response: Response;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 60_000);
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      response = await fetch(targetUrl, {
-        method: "POST",
-        body: formData,
-        signal: controller.signal,
-      });
+      console.log(`[API] Processing analysis attempt ${attempt}/${maxAttempts}`);
+
+      if (Platform.OS === "web") {
+        let imageBlob: Blob;
+        try {
+          const res = await fetch(asset.uri);
+          imageBlob = await res.blob();
+        } catch {
+          throw new ScanApiError(
+            "The selected image could not be read by the browser. Please choose it again."
+          );
+        }
+
+        const formData = new FormData();
+        formData.append("file", imageBlob, fileName);
+
+        const response = await fetchWithTimeout(targetUrl, {
+          method: "POST",
+          body: formData,
+        }, REQUEST_TIMEOUT_MS);
+
+        const payload = await response.json().catch(() => null);
+
+        if (!response.ok) {
+          if (response.status === 504 && attempt < maxAttempts) {
+            console.warn(`[API] 504 Gateway Timeout on attempt ${attempt}. Retrying in ${RETRY_DELAY_MS}ms...`);
+            await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+            continue;
+          }
+
+          const detail = payload?.detail;
+          const message = typeof detail === "string" ? detail : detail?.message;
+          throw new ScanApiError(
+            message || "The label could not be analyzed.",
+            response.status
+          );
+        }
+
+        console.log("[API] Scan analysis completed successfully on web.");
+        return payload as ScanResponse;
+      } else {
+        // Native path (iOS / Android) using LegacyFileSystem.uploadAsync
+        const uploadResult = await uploadAsyncWithTimeout(
+          targetUrl,
+          asset.uri,
+          mimeType,
+          REQUEST_TIMEOUT_MS
+        );
+
+        console.log(`[API] uploadAsync attempt ${attempt} HTTP status:`, uploadResult.status);
+
+        if (uploadResult.status === 504 && attempt < maxAttempts) {
+          console.warn(`[API] 504 Gateway Timeout on attempt ${attempt}. Retrying in ${RETRY_DELAY_MS}ms...`);
+          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+          continue;
+        }
+
+        let payload: any = null;
+        try {
+          payload = JSON.parse(uploadResult.body);
+        } catch {
+          // Leave payload as null if body isn't JSON
+        }
+
+        if (uploadResult.status < 200 || uploadResult.status >= 300) {
+          const detail = payload?.detail;
+          const message = typeof detail === "string" ? detail : detail?.message;
+          throw new ScanApiError(
+            message || "The label could not be analyzed.",
+            uploadResult.status
+          );
+        }
+
+        console.log("[API] Scan analysis completed successfully on native.");
+        return payload as ScanResponse;
+      }
     } catch (err: any) {
-      throw new ScanApiError(
-        `Could not reach Label Police (${err?.message ?? "Network Error"}). ` +
-          "Check your network connection."
-      );
-    } finally {
-      clearTimeout(timeout);
-      console.log("================ [API DEBUG END] ================");
+      lastError = err;
+      console.warn(`[API] Attempt ${attempt}/${maxAttempts} failed:`, err?.message);
+
+      if (attempt < maxAttempts && isColdStartOrTimeoutError(err)) {
+        console.log(`[API] Cold-start/timeout detected on attempt ${attempt}. Retrying in ${RETRY_DELAY_MS}ms...`);
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        continue;
+      }
+
+      break;
     }
-
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) {
-      const detail = payload?.detail;
-      const message = typeof detail === "string" ? detail : detail?.message;
-      throw new ScanApiError(
-        message || "The label could not be analyzed.",
-        response.status
-      );
-    }
-    return payload as ScanResponse;
   }
 
-  // ── NATIVE PATH (Android / iOS) ───────────────────────────────────────────
-  // React Native's JS fetch polyfill throws "Unsupported FormDataPart
-  // implementation" when a plain JS object is passed to FormData on the native
-  // bridge.
-  //
-  // LegacyFileSystem.uploadAsync reads the file directly from the native file
-  // system and builds the multipart body entirely in native code, so the JS
-  // bridge never encounters a FormDataPart at all.
-  let uploadResult: LegacyFileSystem.FileSystemUploadResult;
-  try {
-    console.log("[API] Using LegacyFileSystem.uploadAsync (native path)");
-    uploadResult = await LegacyFileSystem.uploadAsync(targetUrl, asset.uri, {
-      httpMethod: "POST",
-      uploadType: LegacyFileSystem.FileSystemUploadType.MULTIPART,
-      fieldName: "file",
-      mimeType,
-      // Do NOT set Content-Type here — the native layer must generate the
-      // multipart boundary automatically, exactly as browsers do.
-    });
-  } catch (err: any) {
-    console.error("[API] LegacyFileSystem.uploadAsync FAILED:");
-    console.error("[API] Error Message:", err?.message);
-    console.error("[API] Error Stack  :", err?.stack);
-    throw new ScanApiError(
-      `Could not reach Label Police (${err?.message ?? "Network Error"}). ` +
-        "Make sure the backend is running and your phone is on the same Wi-Fi network."
-    );
-  } finally {
-    console.log("================ [API DEBUG END] ================");
-  }
-
-  console.log("[API] uploadAsync HTTP status:", uploadResult.status);
-
-  // uploadAsync returns the raw body as a string — parse it manually.
-  let payload: any = null;
-  try {
-    payload = JSON.parse(uploadResult.body);
-  } catch {
-    // Leave payload as null; the status check below will surface the error.
-  }
-
-  if (uploadResult.status < 200 || uploadResult.status >= 300) {
-    const detail = payload?.detail;
-    const message = typeof detail === "string" ? detail : detail?.message;
-    throw new ScanApiError(
-      message || "The label could not be analyzed.",
-      uploadResult.status
-    );
-  }
-
-  return payload as ScanResponse;
+  console.error("[API] All analyze attempts exhausted.");
+  throw handleApiError(lastError, "Could not reach Label Police. Check your network connection.");
 }
 
 // ---------------------------------------------------------------------------
-// Scan History
+// Scan History (with 120s Timeout & Auto-Retry)
 // ---------------------------------------------------------------------------
 
 export async function fetchScanHistory(): Promise<ScanHistoryItem[]> {
@@ -268,28 +408,43 @@ export async function fetchScanHistory(): Promise<ScanHistoryItem[]> {
   console.log("================ [HISTORY API DEBUG] ================");
   console.log("[API] Target URL:", targetUrl);
 
-  let response: Response;
-  try {
-    response = await fetch(targetUrl);
-    console.log("[API] History response status:", response.status);
-  } catch (err: any) {
-    console.error("[API] HISTORY FETCH FAILED:");
-    console.error("[API] Error Message:", err?.message);
-    console.error("[API] Error Stack  :", err?.stack);
-    throw new ScanApiError(
-      `Could not reach Label Police (${err?.message ?? "Network Error"}). ` +
-        "Start the backend and ensure this device can reach it over your local network."
-    );
+  const maxAttempts = 2;
+  let lastError: any = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      console.log(`[API] Fetching scan history (attempt ${attempt}/${maxAttempts})`);
+      const response = await fetchWithTimeout(targetUrl, { method: "GET" }, REQUEST_TIMEOUT_MS);
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        if (response.status === 504 && attempt < maxAttempts) {
+          console.warn(`[API] 504 on history fetch. Retrying in ${RETRY_DELAY_MS}ms...`);
+          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+          continue;
+        }
+
+        const detail = payload?.detail;
+        const message = typeof detail === "string" ? detail : detail?.message;
+        throw new ScanApiError(
+          message || "Your scan history could not be loaded.",
+          response.status
+        );
+      }
+
+      return Array.isArray(payload) ? (payload as ScanHistoryItem[]) : [];
+    } catch (err: any) {
+      lastError = err;
+      console.warn(`[API] History fetch attempt ${attempt} failed:`, err?.message);
+
+      if (attempt < maxAttempts && isColdStartOrTimeoutError(err)) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        continue;
+      }
+
+      break;
+    }
   }
 
-  const payload = await response.json().catch(() => null);
-  if (!response.ok) {
-    const detail = payload?.detail;
-    const message = typeof detail === "string" ? detail : detail?.message;
-    throw new ScanApiError(
-      message || "Your scan history could not be loaded.",
-      response.status
-    );
-  }
-  return Array.isArray(payload) ? (payload as ScanHistoryItem[]) : [];
+  throw handleApiError(lastError, "Your scan history could not be loaded.");
 }

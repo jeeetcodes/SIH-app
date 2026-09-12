@@ -1,4 +1,4 @@
-import { useCallback, useState, type FC } from "react";
+import { useCallback, useEffect, useState, type FC } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -12,7 +12,12 @@ import {
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { analyzeLabelImage, ScanApiError, type ScanResponse } from "@/services/scan-api";
+import {
+  analyzeLabelImage,
+  pingBackend,
+  ScanApiError,
+  type ScanResponse,
+} from "@/services/scan-api";
 import { InspectionResultView } from "@/components/inspection-result-view";
 
 const COLORS = {
@@ -26,6 +31,9 @@ const COLORS = {
   white: "#FFFFFF",
   accent: "#2563EB",
   accentLight: "#EFF6FF",
+  warningBg: "#FEF3C7",
+  warningBorder: "#FDE68A",
+  warningText: "#92400E",
 } as const;
 
 const pickerOptions: ImagePicker.ImagePickerOptions = {
@@ -40,6 +48,36 @@ const ScanHome: FC = () => {
   const [image, setImage] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [scanReport, setScanReport] = useState<ScanResponse | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isBackendWarming, setIsBackendWarming] = useState(false);
+
+  // Trigger non-blocking warm-up ping to Render backend on mount
+  useEffect(() => {
+    let isMounted = true;
+    const warmingTimer = setTimeout(() => {
+      if (isMounted) {
+        setIsBackendWarming(true);
+      }
+    }, 3000);
+
+    pingBackend()
+      .then((ok) => {
+        console.log("[ScanHome] Warm-up ping result:", ok ? "Online" : "Cold/Pending");
+      })
+      .catch((err) => {
+        console.warn("[ScanHome] Warm-up ping error:", err?.message);
+      })
+      .finally(() => {
+        clearTimeout(warmingTimer);
+        if (isMounted) {
+          setIsBackendWarming(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+      clearTimeout(warmingTimer);
+    };
+  }, []);
 
   const applyPickerResult = useCallback((result: ImagePicker.ImagePickerResult) => {
     if (result.canceled) {
@@ -145,6 +183,16 @@ const ScanHome: FC = () => {
         <Text style={styles.headerTitle}>Label Police</Text>
         <Text style={styles.headerSubtitle}>Legal Metrology Compliance Inspector</Text>
       </View>
+
+      {/* Backend Free-Tier Warming Status Indicator */}
+      {isBackendWarming ? (
+        <View style={styles.warmingBanner}>
+          <ActivityIndicator size="small" color={COLORS.warningText} />
+          <Text style={styles.warmingBannerText}>
+            Waking up server (Render free tier cold start)... Ready shortly.
+          </Text>
+        </View>
+      ) : null}
 
       {/* If an inspection report is available, render the results view directly */}
       {scanReport ? (
@@ -261,6 +309,22 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#A0AEC0",
     marginTop: 2,
+  },
+  warmingBanner: {
+    backgroundColor: COLORS.warningBg,
+    borderColor: COLORS.warningBorder,
+    borderBottomWidth: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  warmingBannerText: {
+    color: COLORS.warningText,
+    fontSize: 12,
+    fontWeight: "700",
   },
   content: {
     padding: 20,
