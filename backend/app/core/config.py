@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
     DATABASE_URL: str = "sqlite:///./label_police.db"
-    GEMINI_MODEL: str = "gemini-2.0-flash"
+    GEMINI_MODEL: str = "gemini-3.6-flash"
     OPENAI_VISION_MODEL: str = "gpt-4o-mini"
     OPENROUTER_MODEL: str = "google/gemma-4-31b-it:free"
     OPENROUTER_SITE_URL: Optional[str] = None
