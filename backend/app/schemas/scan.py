@@ -75,37 +75,29 @@ class Violation(BaseModel):
     rule_id: str
     rule_name: Optional[str] = None
     field_name: str
-    severity: Literal["CRITICAL", "MAJOR", "MINOR", "WARNING", "critical", "major", "minor"]
+    severity: Literal["CRITICAL", "MAJOR", "MINOR", "WARNING"]
     penalty: int = 0
     message: str
     explanation: Optional[str] = None
     citation: str
 
-    def model_post_init(self, __context) -> None:
-        if not self.explanation:
-            self.explanation = self.message
-        if not self.rule_name:
-            self.rule_name = self.rule_id
-
 
 class ScanResponse(BaseModel):
     scan_id: str
     status: Literal["COMPLIANT", "NON_COMPLIANT"]
-    final_score: int = Field(ge=0, le=100)
-    overall_score: int = Field(ge=0, le=100)
+    final_score: Optional[int] = None
+    overall_score: int
     product_category: Optional[str] = None
     extracted_data: ExtractedLabelData
     violations: List[Violation]
-    used_mock_vision: bool = False
+    used_mock_vision: bool
     is_packaging_label: Optional[bool] = None
     image_assessment: Optional[str] = None
 
 
-class ScanHistoryItem(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
+class ScanHistoryResponse(BaseModel):
     id: int
     created_at: datetime
     product_name: Optional[str]
-    score: int = Field(ge=0, le=100)
+    score: int
     is_compliant: bool

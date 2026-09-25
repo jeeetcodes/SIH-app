@@ -1,0 +1,15 @@
+# Exclude unnecessary files from Vercel deployment
+backend/.venv/
+backend/venv/
+backend/.pytest_cache/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/.env
+backend/.env.local
+mobile/
+*.md
+.git/
+.gitignore
+README.md
+RENDER_ENV_SETUP.md

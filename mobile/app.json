@@ -7,15 +7,24 @@
     "icon": "./assets/images/icon.png",
     "scheme": "labelpolis",
     "userInterfaceStyle": "automatic",
+<<<<<<< HEAD
     "ios": {
       "supportsTablet": true
     },
+=======
+
+    "ios": {
+      "supportsTablet": true
+    },
+
+>>>>>>> origin/backendapi-pdf
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundColor": "#E6F4FE"
       },
       "package": "com.labelpolis.app",
+<<<<<<< HEAD
       "usesCleartextTraffic": true,
       "permissions": [
         "android.permission.RECORD_AUDIO"
@@ -24,6 +33,15 @@
     "web": {
       "favicon": "./assets/images/favicon.png"
     },
+=======
+      "usesCleartextTraffic": true
+    },
+
+    "web": {
+      "favicon": "./assets/images/favicon.png"
+    },
+
+>>>>>>> origin/backendapi-pdf
     "plugins": [
       "expo-router",
       [
@@ -34,6 +52,7 @@
         }
       ]
     ],
+<<<<<<< HEAD
     "experiments": {
       "typedRoutes": true
     },
@@ -45,3 +64,11 @@
     }
   }
 }
+=======
+
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
+>>>>>>> origin/backendapi-pdf

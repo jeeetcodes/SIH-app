@@ -41,6 +41,16 @@ export default function TabsLayout() {
           tabBarIcon: ({ focused }) => <TabIcon icon="📋" label="My Scans" focused={focused} />,
         }}
       />
+<<<<<<< HEAD
+=======
+      <Tabs.Screen
+        name="profile"
+        options={{
+          title: "Profile",
+          tabBarIcon: ({ focused }) => <TabIcon icon="👤" label="Profile" focused={focused} />,
+        }}
+      />
+>>>>>>> origin/backendapi-pdf
     </Tabs>
   );
 }

@@ -1,7 +1,15 @@
+<<<<<<< HEAD
 import { useCallback, useEffect, useState, type FC } from "react";
 import {
   ActivityIndicator,
   Alert,
+=======
+import { useCallback, useState, type FC } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+>>>>>>> origin/backendapi-pdf
   Modal,
   Pressable,
   ScrollView,
@@ -9,6 +17,7 @@ import {
   Text,
   View,
 } from "react-native";
+<<<<<<< HEAD
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -19,6 +28,12 @@ import {
   type ScanResponse,
 } from "@/services/scan-api";
 import { InspectionResultView } from "@/components/inspection-result-view";
+=======
+import { type Href, useRouter } from "expo-router";
+import * as ImagePicker from "expo-image-picker";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { analyzeLabelImage, ScanApiError } from "@/services/scan-api";
+>>>>>>> origin/backendapi-pdf
 
 const COLORS = {
   navy: "#1B365D",
@@ -31,18 +46,26 @@ const COLORS = {
   white: "#FFFFFF",
   accent: "#2563EB",
   accentLight: "#EFF6FF",
+<<<<<<< HEAD
   warningBg: "#FEF3C7",
   warningBorder: "#FDE68A",
   warningText: "#92400E",
+=======
+>>>>>>> origin/backendapi-pdf
 } as const;
 
 const pickerOptions: ImagePicker.ImagePickerOptions = {
   mediaTypes: ["images"],
   quality: 0.9,
+<<<<<<< HEAD
+=======
+  // Preserve the complete label rather than asking the user to crop it.
+>>>>>>> origin/backendapi-pdf
   allowsEditing: false,
 };
 
 const ScanHome: FC = () => {
+<<<<<<< HEAD
   const insets = useSafeAreaInsets();
   // Persistent image and report state — guarantees scanned image never disappears
   const [image, setImage] = useState<ImagePicker.ImagePickerAsset | null>(null);
@@ -78,6 +101,12 @@ const ScanHome: FC = () => {
       clearTimeout(warmingTimer);
     };
   }, []);
+=======
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const [image, setImage] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+>>>>>>> origin/backendapi-pdf
 
   const applyPickerResult = useCallback((result: ImagePicker.ImagePickerResult) => {
     if (result.canceled) {
@@ -86,7 +115,10 @@ const ScanHome: FC = () => {
     const asset = result.assets[0];
     if (asset?.uri) {
       setImage(asset);
+<<<<<<< HEAD
       setScanReport(null); // Clear previous result when new image is chosen
+=======
+>>>>>>> origin/backendapi-pdf
     }
   }, []);
 
@@ -134,6 +166,7 @@ const ScanHome: FC = () => {
     setIsAnalyzing(true);
     try {
       const result = await analyzeLabelImage(image);
+<<<<<<< HEAD
       // Persist the scan report right here without navigating away or losing image state
       setScanReport(result);
     } catch (error) {
@@ -191,16 +224,49 @@ const ScanHome: FC = () => {
   const handleScanAgain = useCallback(() => {
     setImage(null);
     setScanReport(null);
+=======
+      router.push({
+        pathname: "/result",
+        params: { imageUri: image.uri, report: JSON.stringify(result) },
+      } as unknown as Href);
+    } catch (error) {
+      if (error instanceof ScanApiError && error.status === 503) {
+        Alert.alert("Server is busy", "Server is busy. Please try again.");
+      } else if (error instanceof ScanApiError && error.status === 400) {
+        Alert.alert(
+          "Valid product label not detected",
+          "Valid product label not detected. Please upload a valid label photo."
+        );
+      } else {
+        const message =
+          error instanceof ScanApiError
+            ? error.message
+            : "Label unreadable or server unavailable. Please retake the photo with better lighting.";
+        Alert.alert("Analysis Error", message);
+      }
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, [image, isAnalyzing, router]);
+
+  const handleClearPreview = useCallback(() => {
+    setImage(null);
+>>>>>>> origin/backendapi-pdf
   }, []);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
+<<<<<<< HEAD
       {/* App Header */}
+=======
+      {/* Header */}
+>>>>>>> origin/backendapi-pdf
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Label Police</Text>
         <Text style={styles.headerSubtitle}>Legal Metrology Compliance Inspector</Text>
       </View>
 
+<<<<<<< HEAD
       {/* Backend Free-Tier Warming Status Indicator */}
       {isBackendWarming ? (
         <View style={styles.warmingBanner}>
@@ -289,13 +355,88 @@ const ScanHome: FC = () => {
       )}
 
       {/* Analyzing Loading Modal Overlay */}
+=======
+      <ScrollView
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 80 }]}
+        showsVerticalScrollIndicator={false}>
+        {/* Main Camera / Preview Frame */}
+        {image ? (
+          <View style={styles.previewCard}>
+            <View style={styles.previewHeader}>
+              <Text style={styles.previewTag}>READY FOR INSPECTION</Text>
+              <Pressable onPress={handleClearPreview} style={styles.removeBtn}>
+                <Text style={styles.removeBtnText}>Clear</Text>
+              </Pressable>
+            </View>
+
+            <Image
+              source={{ uri: image.uri }}
+              style={styles.previewImage}
+              resizeMode="contain"
+              accessibilityLabel="Captured packaging label preview"
+            />
+          </View>
+        ) : (
+          <View style={styles.cameraBox}>
+            {/* Viewfinder frame overlay */}
+            <View style={styles.viewfinderGuide}>
+              <View style={[styles.corner, styles.topLeft]} />
+              <View style={[styles.corner, styles.topRight]} />
+              <View style={[styles.corner, styles.bottomLeft]} />
+              <View style={[styles.corner, styles.bottomRight]} />
+
+              <Text style={styles.guideIcon}>🔍</Text>
+              <Text style={styles.guideTitle}>Align Product Label Here</Text>
+              <Text style={styles.guideSubtitle}>
+                Ensure MRP, Net Qty, Dates & Consumer Care details are clearly visible
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {/* Action Controls */}
+        <View style={styles.controlsGroup}>
+          {image ? (
+            <Pressable
+              onPress={handleAnalyzeLabel}
+              disabled={isAnalyzing}
+              style={({ pressed }) => [styles.analyzeBtn, pressed && styles.pressed]}>
+              <Text style={styles.analyzeBtnText}>⚡ Audit Label Compliance</Text>
+            </Pressable>
+          ) : (
+            <Pressable
+              onPress={handleScanLabel}
+              style={({ pressed }) => [styles.shutterBtn, pressed && styles.pressed]}>
+              <View style={styles.shutterInner}>
+                <Text style={styles.shutterIcon}>📸</Text>
+              </View>
+              <Text style={styles.shutterText}>Snap Label Photo</Text>
+            </Pressable>
+          )}
+
+          <Pressable
+            onPress={handleChooseFromGallery}
+            style={({ pressed }) => [styles.galleryBtn, pressed && styles.pressed]}>
+            <Text style={styles.galleryBtnText}>
+              {image ? "Choose Different Image" : "📁 Choose from Gallery"}
+            </Text>
+          </Pressable>
+        </View>
+      </ScrollView>
+
+      {/* Futuristic Analyzing Loading Modal Overlay */}
+>>>>>>> origin/backendapi-pdf
       <Modal visible={isAnalyzing} transparent animationType="fade">
         <View style={styles.loadingOverlay}>
           <View style={styles.loadingCard}>
             <ActivityIndicator size="large" color={COLORS.navy} />
             <Text style={styles.loadingTitle}>Analyzing Label...</Text>
             <Text style={styles.loadingBody}>
+<<<<<<< HEAD
               Performing high-precision visual audit against Legal Metrology Rules, 2011
+=======
+              Performing high-precision visual audit against Legal Metrology Rules 2011
+>>>>>>> origin/backendapi-pdf
             </Text>
           </View>
         </View>
@@ -327,6 +468,7 @@ const styles = StyleSheet.create({
     color: "#A0AEC0",
     marginTop: 2,
   },
+<<<<<<< HEAD
   warmingBanner: {
     backgroundColor: COLORS.warningBg,
     borderColor: COLORS.warningBorder,
@@ -343,6 +485,8 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
   },
+=======
+>>>>>>> origin/backendapi-pdf
   content: {
     padding: 20,
     gap: 18,
@@ -402,7 +546,11 @@ const styles = StyleSheet.create({
   removeBtnText: { fontSize: 13, fontWeight: "600", color: "#E53E3E" },
   previewImage: {
     width: "100%",
+<<<<<<< HEAD
     height: 380,
+=======
+    height: 400,
+>>>>>>> origin/backendapi-pdf
     maxHeight: 400,
     borderRadius: 12,
     backgroundColor: COLORS.offWhite,

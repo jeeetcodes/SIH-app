@@ -2,8 +2,10 @@ import Constants from "expo-constants";
 import * as LegacyFileSystem from "expo-file-system/legacy";
 import { Platform } from "react-native";
 
+// Keep the most comprehensive severity type (HEAD has lowercase variants)
 export type Severity = "CRITICAL" | "MAJOR" | "MINOR" | "WARNING" | "critical" | "major" | "minor";
 
+// Keep all fields from HEAD (includes product_name, product_category, expiry_date, fssai_license, ingredients, formatting_assessment)
 export type ExtractedLabelData = {
   product_name?: string | null;
   product_category?: string | null;
@@ -22,6 +24,7 @@ export type ExtractedLabelData = {
   image_assessment?: string | null;
 };
 
+// Keep all fields from HEAD (includes rule_name, penalty, explanation)
 export type Violation = {
   rule_id: string;
   rule_name?: string;
@@ -33,6 +36,7 @@ export type Violation = {
   citation: string;
 };
 
+// Keep all fields from HEAD (includes final_score, product_category)
 export type ScanResponse = {
   scan_id: string;
   status: "COMPLIANT" | "NON_COMPLIANT";
@@ -54,6 +58,7 @@ export type ScanHistoryItem = {
   is_compliant: boolean;
 };
 
+// Keep the more detailed error constructor with code field
 export class ScanApiError extends Error {
   constructor(message: string, public readonly status?: number, public readonly code?: string) {
     super(message);
@@ -62,14 +67,15 @@ export class ScanApiError extends Error {
 }
 
 // ---------------------------------------------------------------------------
-// Constants & Configuration
+// Constants & Configuration - Vercel-optimized
 // ---------------------------------------------------------------------------
 
+// ⚠️ VERCEL DEPLOYMENT: Replace this URL with your .vercel.app URL after deployment
 export const PRODUCTION_API_URL = "https://packlens-3ko8.onrender.com/api/v1";
-export const REQUEST_TIMEOUT_MS = 120_000; // 120s timeout to support Render free tier cold starts
-export const RETRY_DELAY_MS = 5_000; // 5s wait before retry on transient network/timeout failure
+export const REQUEST_TIMEOUT_MS = 30_000; // 30s timeout for Vercel serverless (10-15s execution limit)
+export const RETRY_DELAY_MS = 3_000; // 3s wait before retry on transient network/timeout failure
 export const COLD_START_MESSAGE =
-  "Server is spinning up (Render free tier cold start). Please wait ~30 seconds and try again.";
+  "Server is processing your request. Please wait a moment and try again.";
 
 // ---------------------------------------------------------------------------
 // URL Resolution & Sanitization
@@ -102,7 +108,7 @@ export function getApiBaseUrl(): string {
 
     if (Platform.OS !== "web" && isLoopbackUrl) {
       console.warn(
-        "[API] EXPO_PUBLIC_API_URL points to localhost, which is unreachable from physical mobile devices. Falling back to production Render backend."
+        "[API] EXPO_PUBLIC_API_URL points to localhost, which is unreachable from physical mobile devices. Falling back to production backend."
       );
       return PRODUCTION_API_URL;
     }
@@ -131,8 +137,8 @@ export function getApiBaseUrl(): string {
     return `http://${window.location.hostname}:8000/api/v1`;
   }
 
-  // 4. Robust production fallback to live Render backend
-  console.log("[API] Defaulting to production Render API URL:", PRODUCTION_API_URL);
+  // 4. Robust production fallback to live backend
+  console.log("[API] Defaulting to production API URL:", PRODUCTION_API_URL);
   return PRODUCTION_API_URL;
 }
 
@@ -208,8 +214,8 @@ function handleApiError(error: any, fallbackMessage: string): ScanApiError {
 // ---------------------------------------------------------------------------
 
 /**
- * Sends a lightweight GET ping to /api/v1/health to wake up the Render free-tier
- * backend early when the app boots or mounts.
+ * Sends a lightweight GET ping to /api/v1/health to check backend availability
+ * early when the app boots or mounts.
  */
 export async function pingBackend(timeoutMs = 15_000): Promise<boolean> {
   const baseUrl = getApiBaseUrl();
@@ -235,7 +241,7 @@ export async function pingBackend(timeoutMs = 15_000): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-// Internal Network Request Helpers with 120s Timeout
+// Internal Network Request Helpers with Timeout
 // ---------------------------------------------------------------------------
 
 async function fetchWithTimeout(
@@ -294,7 +300,7 @@ async function uploadAsyncWithTimeout(
 }
 
 // ---------------------------------------------------------------------------
-// Image Upload & Analysis (with 120s Timeout & Auto-Retry)
+// Image Upload & Analysis (with Auto-Retry)
 // ---------------------------------------------------------------------------
 
 export async function analyzeLabelImage(asset: {
@@ -439,7 +445,7 @@ export async function analyzeLabelImage(asset: {
 }
 
 // ---------------------------------------------------------------------------
-// Scan History (with 120s Timeout & Auto-Retry)
+// Scan History (with Auto-Retry)
 // ---------------------------------------------------------------------------
 
 export async function fetchScanHistory(): Promise<ScanHistoryItem[]> {
