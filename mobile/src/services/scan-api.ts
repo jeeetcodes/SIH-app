@@ -166,6 +166,27 @@ function isColdStartOrTimeoutError(error: any): boolean {
   );
 }
 
+function getBackendErrorMessage(error: any, fallbackMessage: string): string {
+  const responseData = error?.response?.data ?? error?.data;
+  const detail = responseData?.detail;
+
+  if (typeof detail === "string") {
+    return detail;
+  }
+
+  if (detail && typeof detail === "object" && typeof detail.message === "string") {
+    return detail.message;
+  }
+
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item: any) => item?.msg || item?.message || JSON.stringify(item))
+      .join("; ");
+  }
+
+  return error?.message || fallbackMessage;
+}
+
 function handleApiError(error: any, fallbackMessage: string): ScanApiError {
   if (error instanceof ScanApiError) {
     if (isColdStartOrTimeoutError(error) && !error.message.includes("spinning up")) {
@@ -178,7 +199,7 @@ function handleApiError(error: any, fallbackMessage: string): ScanApiError {
     return new ScanApiError(COLD_START_MESSAGE, error?.status, "ECONNABORTED");
   }
 
-  const message = error?.message || fallbackMessage;
+  const message = getBackendErrorMessage(error, fallbackMessage);
   return new ScanApiError(message, error?.status, error?.code);
 }
 
@@ -335,12 +356,7 @@ export async function analyzeLabelImage(asset: {
             continue;
           }
 
-          const detail = payload?.detail;
-          const message = typeof detail === "string"
-            ? detail
-            : typeof detail === "object" && detail?.message
-              ? detail.message
-              : null;
+          const message = getBackendErrorMessage({ response: { data: payload } }, "");
           throw new ScanApiError(
             message || `Server responded with ${response.status}. The label could not be analyzed.`,
             response.status
@@ -381,14 +397,7 @@ export async function analyzeLabelImage(asset: {
             continue;
           }
 
-          const detail = payload?.detail;
-          const message = typeof detail === "string"
-            ? detail
-            : typeof detail === "object" && detail?.message
-              ? detail.message
-              : Array.isArray(detail)
-                ? detail.map((d: any) => d?.msg || d?.message || JSON.stringify(d)).join("; ")
-                : null;
+          const message = getBackendErrorMessage({ response: { data: payload } }, "");
           throw new ScanApiError(
             message || `Server responded with ${uploadResult.status}. The label could not be analyzed.`,
             uploadResult.status
@@ -398,18 +407,20 @@ export async function analyzeLabelImage(asset: {
         console.log("[API] Scan analysis completed successfully on native.");
         return payload as ScanResponse;
       }
-    } catch (err: any) {
-      lastError = err;
+    } catch (error: any) {
+      lastError = error;
+      console.error("Backend Error Details:", error.response?.status, error.response?.data);
+      console.error("Backend Error Details:", error?.response?.status ?? error?.status, error?.response?.data ?? error?.data);
       console.error(
         `[API] Attempt ${attempt}/${maxAttempts} FAILED.`,
-        "\n  Error name   :", err?.name,
-        "\n  Error message:", err?.message,
-        "\n  Error code   :", err?.code,
-        "\n  HTTP status  :", err?.status,
-        "\n  Stack        :", err?.stack?.split("\n").slice(0, 3).join("\n")
+        "\n  Error name   :", error?.name,
+        "\n  Error message:", error?.message,
+        "\n  Error code   :", error?.code,
+        "\n  HTTP status  :", error?.response?.status ?? error?.status,
+        "\n  Stack        :", error?.stack?.split("\n").slice(0, 3).join("\n")
       );
 
-      if (attempt < maxAttempts && isColdStartOrTimeoutError(err)) {
+      if (attempt < maxAttempts && isColdStartOrTimeoutError(error)) {
         console.log(`[API] Cold-start/timeout detected on attempt ${attempt}. Retrying in ${RETRY_DELAY_MS}ms...`);
         await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
         continue;

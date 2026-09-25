@@ -22,6 +22,7 @@ from app.services.vision_llm import (
     VisionLLMService,
     VisionProviderBusyError,
     VisionProviderConnectionError,
+    VisionProviderRateLimitError,
     is_provider_busy,
     is_provider_connection_error,
 )
@@ -131,35 +132,51 @@ async def analyze_scan(
     # --- Image preprocessing for improved OCR accuracy ---
     image_bytes, mime_type = image_preprocessor.enhance(image_bytes, mime_type)
 
+    # Master exception wrapper to guarantee crash-proof operation.
     try:
-        extracted, used_mock = vision_service.extract(image_bytes, mime_type=mime_type)
-    except VisionProviderBusyError:
+        try:
+            extracted, used_mock = vision_service.extract(image_bytes, mime_type=mime_type)
+        except ValueError as e:
+            # Configuration errors (e.g., no API keys configured).
+            error_text = str(e).lower()
+            if "no" in error_text and ("api key" in error_text or "configured" in error_text or "provider" in error_text):
+                logger.critical("Vision service configuration error: %s", e)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Vision service is not properly configured. Contact administrator.",
+                )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(e),
+            )
+        except RuntimeError as e:
+            # All providers failed after exhausting the cascade.
+            error_text = str(e).lower()
+            if "all" in error_text and ("provider" in error_text or "failed" in error_text):
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="All vision processing nodes are currently busy or unavailable. Please try again in a few seconds.",
+                )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Vision extraction failed: {str(e)[:200]}",
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("Vision extraction crashed")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Vision extraction failed: {str(e)[:200]}",
+            )
+    except Exception as outer_exc:
+        # Absolute final safety net: ensure we NEVER crash the process.
+        logger.critical("Unhandled exception in scan endpoint: %s", outer_exc, exc_info=True)
+        if isinstance(outer_exc, HTTPException):
+            raise
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="The AI server is currently busy due to high demand. Please try again in a few moments.",
-        )
-    except VisionProviderConnectionError:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Unable to connect to AI provider. Check backend internet connection/DNS.",
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        if is_provider_busy(e):
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="The AI server is currently busy due to high demand. Please try again in a few moments.",
-            )
-        if is_provider_connection_error(e):
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Unable to connect to AI provider. Check backend internet connection/DNS.",
-            )
-        logger.exception("Vision extraction crashed")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
+            detail="All vision processing nodes are currently busy or unavailable. Please try again in a few seconds.",
         )
 
     if extracted.is_packaging_label is False:

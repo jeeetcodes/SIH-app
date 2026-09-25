@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Label Police Backend"
     API_V1_STR: str = "/api/v1"
     GEMINI_API_KEY: Optional[str] = None
+    GEMINI_API_KEYS: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
     OPENROUTER_API_KEY: Optional[str] = None
     CORS_ORIGINS: List[str] = Field(default_factory=lambda: ["*"])
@@ -61,7 +62,7 @@ class Settings(BaseSettings):
             return "postgresql://" + text[len("postgres://"):]
         return text
 
-    @field_validator("GEMINI_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", mode="before")
+    @field_validator("GEMINI_API_KEY", "GEMINI_API_KEYS", "OPENAI_API_KEY", "OPENROUTER_API_KEY", mode="before")
     @classmethod
     def empty_key_to_none(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -71,7 +72,13 @@ class Settings(BaseSettings):
 
     @property
     def has_vision_provider(self) -> bool:
-        return bool(self.OPENROUTER_API_KEY or self.GEMINI_API_KEY or self.OPENAI_API_KEY)
+        return bool(self.OPENROUTER_API_KEY or self.GEMINI_API_KEY or self.GEMINI_API_KEYS or self.OPENAI_API_KEY)
+
+    @property
+    def gemini_api_keys_list(self) -> list[str]:
+        """Parse GEMINI_API_KEYS (comma-separated) or fallback to GEMINI_API_KEY."""
+        raw = self.GEMINI_API_KEYS or self.GEMINI_API_KEY or ""
+        return [k.strip() for k in raw.split(",") if k.strip()]
 
 
 @lru_cache

@@ -8,7 +8,14 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.10.12
+      # Multi-key Gemini support (comma-separated)
+      - key: GEMINI_API_KEYS
+        sync: false
+      # Legacy single key (deprecated, use GEMINI_API_KEYS)
       - key: GEMINI_API_KEY
+        sync: false
+      # OpenRouter fallback layer (optional)
+      - key: OPENROUTER_API_KEY
         sync: false
       - key: DATABASE_URL
         sync: false

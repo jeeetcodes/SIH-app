@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import time
 from typing import Union
 
 from app.core.config import settings
@@ -91,6 +92,15 @@ class VisionProviderBusyError(Exception):
         super().__init__(message)
 
 
+class VisionProviderRateLimitError(Exception):
+    """Raised when Gemini remains rate-limited after retrying."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "AI Vision Provider is currently rate limited. Please try again in 15 seconds."
+        )
+
+
 class VisionProviderConnectionError(Exception):
     """Raised when DNS resolution or network connection to AI provider fails."""
 
@@ -163,35 +173,67 @@ class VisionLLMService:
     ) -> tuple[ExtractedLabelData, bool]:
         """Extract label fields from raw bytes or base64. Returns (extracted_data, used_mock_vision)."""
         try:
-            image_bytes = self._coerce_bytes(image)
-        except Exception:
-            logger.exception("Unable to decode uploaded image payload")
-            return ExtractedLabelData(), True
+            # Master try-except wrapper to guarantee zero process-level crashes.
+            try:
+                image_bytes = self._coerce_bytes(image)
+            except Exception:
+                logger.exception("Unable to decode uploaded image payload")
+                return ExtractedLabelData(), True
 
-        if not image_bytes:
-            return ExtractedLabelData(), True
+            if not image_bytes:
+                return ExtractedLabelData(), True
 
-        if not settings.has_vision_provider:
-            logger.warning("No vision API key configured; returning structured mock extraction")
-            return MOCK_EXTRACTED_LABEL.model_copy(), True
+            if not settings.has_vision_provider:
+                logger.warning("No vision API key configured; returning structured mock extraction")
+                return MOCK_EXTRACTED_LABEL.model_copy(), True
 
-        try:
+            # Multi-provider cascade: Layer 1 (Gemini) → Layer 2 (OpenRouter) → Layer 3 (OpenAI)
+            providers = []
+
+            # Layer 1: Gemini (if keys configured)
+            if settings.GEMINI_API_KEY or settings.GEMINI_API_KEYS:
+                providers.append(("Gemini", self._extract_with_gemini))
+
+            # Layer 2: OpenRouter (if key configured)
             if settings.OPENROUTER_API_KEY:
-                return self._extract_with_openrouter(image_bytes, mime_type), False
-            if settings.GEMINI_API_KEY:
-                return self._extract_with_gemini(image_bytes, mime_type), False
-            return self._extract_with_openai(image_bytes, mime_type), False
-        except (VisionProviderBusyError, VisionProviderConnectionError):
-            raise
+                providers.append(("OpenRouter", self._extract_with_openrouter))
+
+            # Layer 3: OpenAI (if key configured)
+            if settings.OPENAI_API_KEY:
+                providers.append(("OpenAI", self._extract_with_openai))
+
+            if not providers:
+                logger.critical("No vision providers configured")
+                return MOCK_EXTRACTED_LABEL.model_copy(), True
+
+            # Try each provider in sequence until one succeeds.
+            last_exception = None
+            for provider_name, provider_func in providers:
+                try:
+                    logger.info("Attempting extraction with provider: %s", provider_name)
+                    result = provider_func(image_bytes, mime_type)
+                    logger.info("Successfully extracted with provider: %s", provider_name)
+                    return result, False
+                except Exception as exc:
+                    logger.warning(
+                        "Provider %s failed: %s. Cascading to next provider...",
+                        provider_name,
+                        str(exc)[:150],
+                    )
+                    last_exception = exc
+                    continue
+
+            # All providers exhausted without success.
+            logger.error("All vision providers exhausted without success")
+            if last_exception:
+                raise last_exception
+            raise RuntimeError("All vision providers failed")
+
         except Exception as exc:
-            if is_provider_busy(exc):
-                logger.warning("Vision provider busy: %s", exc)
-                raise VisionProviderBusyError() from exc
-            if is_provider_connection_error(exc):
-                logger.warning("Vision provider connection/DNS failed: %s", exc)
-                raise VisionProviderConnectionError() from exc
-            logger.exception("Vision provider failed")
-            raise
+            # Final safety net: log and re-raise as a known exception type.
+            logger.exception("Critical failure in vision extraction service")
+            # Wrap unknown exceptions to prevent raw 500 crashes.
+            raise RuntimeError(f"Vision extraction failed: {exc}") from exc
 
     def _coerce_bytes(self, image: Union[bytes, str]) -> bytes:
         if isinstance(image, bytes):
@@ -207,39 +249,78 @@ class VisionLLMService:
         from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        response = client.models.generate_content(
-            model=settings.GEMINI_MODEL or "gemini-2.5-flash",
-            contents=[
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_bytes(data=image_bytes, mime_type=mime_type or "image/jpeg"),
-                        types.Part.from_text(text=USER_PROMPT),
-                    ],
-                )
-            ],
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                temperature=0.0,
-                top_p=1.0,
-                response_mime_type="application/json",
-                response_schema=ExtractedLabelData,
-            ),
-        )
+        # Safe key collection with zero startup crashes.
+        api_keys = settings.gemini_api_keys_list
+        if not api_keys:
+            logger.warning("No valid Gemini API keys configured in GEMINI_API_KEYS or GEMINI_API_KEY")
+            raise ValueError("No Gemini API keys configured")
 
-        raw_text = getattr(response, "text", None) or ""
-        logger.info("[Gemini] Raw vision response:\n%s", raw_text)
+        # Layer 1: Gemini models in priority order (verified active models).
+        candidate_models = ["gemini-3.6-flash", "gemini-2.5-flash"]
 
-        parsed = getattr(response, "parsed", None)
-        if isinstance(parsed, ExtractedLabelData):
-            return parsed
-        try:
-            return ExtractedLabelData.model_validate_json(raw_text)
-        except Exception:
-            logger.warning("[Gemini] JSON parsing failed, attempting sanitize: %s", raw_text)
-            cleaned = self._clean_json(raw_text)
-            return ExtractedLabelData.model_validate(json.loads(cleaned))
+        # Override with settings.GEMINI_MODEL if explicitly set and not empty.
+        if settings.GEMINI_MODEL and settings.GEMINI_MODEL.strip():
+            explicit_model = settings.GEMINI_MODEL.strip()
+            if explicit_model not in candidate_models:
+                candidate_models.insert(0, explicit_model)
+
+        # Cascading loop: try every key × model combination with universal exception handling.
+        for api_key in api_keys:
+            client = genai.Client(api_key=api_key)
+            key_suffix = api_key[-4:] if len(api_key) >= 4 else "****"
+
+            for model in candidate_models:
+                try:
+                    request = {
+                        "model": model,
+                        "contents": [
+                            types.Content(
+                                role="user",
+                                parts=[
+                                    types.Part.from_bytes(data=image_bytes, mime_type=mime_type or "image/jpeg"),
+                                    types.Part.from_text(text=USER_PROMPT),
+                                ],
+                            )
+                        ],
+                        "config": types.GenerateContentConfig(
+                            system_instruction=SYSTEM_PROMPT,
+                            temperature=0.0,
+                            top_p=1.0,
+                            response_mime_type="application/json",
+                            response_schema=ExtractedLabelData,
+                        ),
+                    }
+
+                    response = client.models.generate_content(**request)
+
+                    # Success — parse and return immediately.
+                    raw_text = getattr(response, "text", None) or ""
+                    logger.info("[Gemini:%s] Raw vision response:\n%s", model, raw_text)
+
+                    parsed = getattr(response, "parsed", None)
+                    if isinstance(parsed, ExtractedLabelData):
+                        return parsed
+                    try:
+                        return ExtractedLabelData.model_validate_json(raw_text)
+                    except Exception:
+                        logger.warning("[Gemini:%s] JSON parsing failed, attempting sanitize: %s", model, raw_text)
+                        cleaned = self._clean_json(raw_text)
+                        return ExtractedLabelData.model_validate(json.loads(cleaned))
+
+                except Exception as exc:
+                    # Universal catch-all: ANY exception triggers fallback to next model/key.
+                    # This includes 429, 503, 500, timeouts, connection errors, API errors, etc.
+                    logger.warning(
+                        "[Provider Warning] Model %s on Provider Gemini (key ending %s) failed with: %s. Trying next fallback...",
+                        model,
+                        key_suffix,
+                        str(exc)[:150],
+                    )
+                    continue  # Try next model/key combination.
+
+        # All Gemini keys and models failed — raise to trigger Layer 2 fallback.
+        logger.warning("All Gemini keys and models exhausted without success")
+        raise ValueError("All Gemini providers failed")
 
     def _extract_with_openai(self, image_bytes: bytes, mime_type: str) -> ExtractedLabelData:
         from openai import OpenAI
@@ -281,37 +362,23 @@ class VisionLLMService:
         return ExtractedLabelData()
 
     def _extract_with_openrouter(self, image_bytes: bytes, mime_type: str) -> ExtractedLabelData:
+        """Layer 2: OpenRouter free vision models cascade with universal exception handling."""
         import httpx
+
+        if not settings.OPENROUTER_API_KEY:
+            raise ValueError("No OpenRouter API key configured")
 
         encoded = base64.b64encode(image_bytes).decode("ascii")
         data_url = f"data:{mime_type or 'image/jpeg'};base64,{encoded}"
         schema = ExtractedLabelData.model_json_schema()
-        payload = {
-            "model": settings.OPENROUTER_MODEL,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": USER_PROMPT},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": data_url, "detail": "high"},
-                        },
-                    ],
-                },
-            ],
-            "temperature": 0.0,
-            "top_p": 1.0,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "label_extraction",
-                    "strict": True,
-                    "schema": schema,
-                },
-            },
-        }
+
+        # OpenRouter free vision models in priority order.
+        candidate_models = [
+            "google/gemma-4-31b-it:free",
+            "meta-llama/llama-3.2-11b-vision-instruct:free",
+            "openrouter/free",  # Auto-router to any available free vision model.
+        ]
+
         headers = {
             "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
@@ -319,26 +386,116 @@ class VisionLLMService:
         if settings.OPENROUTER_SITE_URL:
             headers["HTTP-Referer"] = settings.OPENROUTER_SITE_URL
 
-        with httpx.Client(timeout=httpx.Timeout(45.0, connect=10.0)) as client:
-            response = client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers=headers,
-                json=payload,
-            )
-            if response.status_code in BUSY_STATUS_CODES:
-                raise VisionProviderBusyError()
-            response.raise_for_status()
+        # Cascading loop: try each model with universal exception handling.
+        for model in candidate_models:
+            try:
+                payload = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": USER_PROMPT},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": data_url, "detail": "high"},
+                                },
+                            ],
+                        },
+                    ],
+                    "temperature": 0.0,
+                    "top_p": 1.0,
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "label_extraction",
+                            "strict": True,
+                            "schema": schema,
+                        },
+                    },
+                }
 
-        content = response.json()["choices"][0]["message"].get("content")
-        logger.info("[OpenRouter] Raw vision response:\n%s", content)
+                with httpx.Client(timeout=httpx.Timeout(45.0, connect=10.0)) as client:
+                    response = client.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    )
+                    response.raise_for_status()
 
-        if not isinstance(content, str) or not content.strip():
-            raise ValueError("OpenRouter returned no extraction content")
-        cleaned = self._clean_json(content)
-        return ExtractedLabelData.model_validate(json.loads(cleaned))
+                content = response.json()["choices"][0]["message"].get("content")
+                logger.info("[OpenRouter:%s] Raw vision response:\n%s", model, content)
+
+                if not isinstance(content, str) or not content.strip():
+                    raise ValueError("OpenRouter returned no extraction content")
+                cleaned = self._clean_json(content)
+                return ExtractedLabelData.model_validate(json.loads(cleaned))
+
+            except Exception as exc:
+                # Universal catch-all: ANY exception triggers fallback to next model.
+                logger.warning(
+                    "[Provider Warning] Model %s on Provider OpenRouter failed with: %s. Trying next fallback...",
+                    model,
+                    str(exc)[:150],
+                )
+                continue  # Try next model.
+
+        # All OpenRouter models failed.
+        logger.warning("All OpenRouter models exhausted without success")
+        raise ValueError("All OpenRouter providers failed")
 
     def _clean_json(self, raw: str) -> str:
         cleaned = raw.strip()
         if cleaned.startswith("```"):
             cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         return cleaned
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """Identify Gemini's 429/API RESOURCE_EXHAUSTED response shape."""
+    for value in (
+        getattr(exc, "status_code", None),
+        getattr(exc, "code", None),
+        getattr(exc, "status", None),
+    ):
+        try:
+            if int(value) == 429:
+                return True
+        except (TypeError, ValueError):
+            continue
+
+    response = getattr(exc, "response", None)
+    try:
+        if int(getattr(response, "status_code", None)) == 429:
+            return True
+    except (TypeError, ValueError):
+        pass
+
+    text = str(exc).upper()
+    return "429" in text or "RESOURCE_EXHAUSTED" in text or "RESOURCE EXHAUSTED" in text
+
+
+def _retry_delay_seconds(exc: BaseException) -> float:
+    """Read Gemini's retryDelay while keeping a practical fallback."""
+    candidates = [getattr(exc, "details", None), getattr(exc, "response_json", None)]
+    response = getattr(exc, "response", None)
+    if response is not None:
+        candidates.append(getattr(response, "json", None))
+
+    for candidate in candidates:
+        if callable(candidate):
+            try:
+                candidate = candidate()
+            except Exception:
+                continue
+        if not isinstance(candidate, dict):
+            continue
+        retry_info = candidate.get("retryDelay") or candidate.get("retry_delay")
+        if isinstance(retry_info, dict):
+            retry_info = retry_info.get("seconds")
+        try:
+            return max(float(retry_info), 5.0)
+        except (TypeError, ValueError):
+            continue
+    return 5.0
